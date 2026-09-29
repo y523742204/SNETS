@@ -92,6 +92,27 @@
     try { localStorage.setItem("snets-circuit", JSON.stringify(state)); $("#save-status").innerHTML = icon("check-circle") + "已保存到本地"; } catch (_) { $("#save-status").textContent = "本地保存不可用"; }
   }
   function toast(message) { clearTimeout(toastTimer); const el = $("#toast"); el.textContent = message; el.classList.add("show"); toastTimer = setTimeout(() => el.classList.remove("show"), 2300); }
+  function selectedComponentIds() { if (!selected) return []; if (selected.kind === "component") return [selected.id]; if (selected.kind === "multi") return selected.components; return []; }
+  function selectedWireIds() { if (!selected) return []; if (selected.kind === "wire") return [selected.id]; if (selected.kind === "multi") return selected.wires; return []; }
+  function isSelectedComponent(id) { return selectedComponentIds().includes(id); }
+  function isSelectedWire(id) { return selectedWireIds().includes(id); }
+  function setMultiSelection(components, wires) {
+    const list = [...new Set(components)].filter(id => state.components.some(c => c.id === id));
+    const wireList = [...new Set(wires)].filter(id => state.wires.some(w => w.id === id));
+    if (!list.length && !wireList.length) { selected = null; return; }
+    if (list.length === 1 && !wireList.length) { selected = { kind: "component", id: list[0] }; return; }
+    if (!list.length && wireList.length === 1) { selected = { kind: "wire", id: wireList[0] }; return; }
+    selected = { kind: "multi", components: list, wires: wireList };
+  }
+  function toggleSelection(kind, id) {
+    const primary = kind === "component" ? selectedComponentIds() : selectedWireIds();
+    const secondary = kind === "component" ? selectedWireIds() : selectedComponentIds();
+    const next = primary.includes(id) ? primary.filter(item => item !== id) : [...primary, id];
+    setMultiSelection(kind === "component" ? next : secondary, kind === "component" ? secondary : next);
+  }
+  function drawMarquee(rect) {
+    $("#marquee-layer").innerHTML = rect ? '<rect class="marquee" x="' + rect.x + '" y="' + rect.y + '" width="' + rect.w + '" height="' + rect.h + '"/>' : "";
+  }
   function refFor(type) {
     const prefix = defs[type].prefix;
     let number = 1;
@@ -151,7 +172,7 @@
   }
   function componentMarkup(c) {
     const d = defs[c.type];
-    const selectedClass = selected?.kind === "component" && selected.id === c.id ? " selected" : "";
+    const selectedClass = isSelectedComponent(c.id) ? " selected" : "";
     const isPort = c.type === "input" || c.type === "output" || c.type === "bidirectional";
     const isPower = c.type === "vdd" || c.type === "gnd";
     const labelX = isPower || isPort ? 0 : 45;
@@ -171,7 +192,7 @@
     const selectedNet = selectedWire?.net;
     $("#wire-layer").innerHTML = state.wires.map(w => {
       const path = C.wirePath(state, w);
-      const highlighted = selectedNet && w.net === selectedNet;
+      const highlighted = (selectedNet && w.net === selectedNet) || isSelectedWire(w.id);
       return '<g class="wire' + (highlighted ? " selected" : "") + '" data-wire="' + escapeHtml(w.id) + '" data-net="' + escapeHtml(w.net || "") + '"><path class="wire-hit" d="' + path + '"/><path class="wire-line" d="' + path + '" pointer-events="none"/></g>';
     }).join("");
     $("#component-layer").innerHTML = state.components.map(componentMarkup).join("");
@@ -180,12 +201,18 @@
     $("#dot-grid").setAttribute("width", gridSize); $("#dot-grid").setAttribute("height", gridSize);
     $("#component-stats").textContent = state.components.length + " 个元件";
     $("#wire-stats").textContent = state.wires.length + " 条连线";
-    $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (selected?.id === c.id ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
+    $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (isSelectedComponent(c.id) ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
     syncHoverPin();
   }
   function renderInspector() {
     const content = $("#properties-content");
     const component = selected?.kind === "component" ? state.components.find(c => c.id === selected.id) : null;
+    if (selected?.kind === "multi") {
+      const comps = state.components.filter(c => selected.components.includes(c.id));
+      const rows = comps.slice(0, 60).map(c => '<li><span class="multi-dot"></span><b>' + escapeHtml(c.ref) + '</b><small>' + defs[c.type].name + '</small></li>').join("");
+      content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + icon("blocks") + '</span><div><h3>已选择 ' + comps.length + ' 个元件</h3><p>' + (selected.wires.length ? selected.wires.length + " 条导线" : "多选模式") + '</p></div></div><div class="inspector-section"><div class="section-heading">批量操作</div><div class="multi-actions"><button class="button soft" data-action="rotate">' + icon("rotate") + '旋转</button><button class="button soft" data-action="duplicate">' + icon("copy") + '复制</button><button class="button soft" data-action="delete">' + icon("trash") + '删除</button><button class="button soft" data-action="clear">清除选择</button></div><ul class="multi-list">' + rows + '</ul><p class="muted-copy">拖动任一元件可整体移动，导线跟随引脚自动重排。按 <kbd>Delete</kbd> 删除全部。</p></div>';
+      return;
+    }
     if (!component) {
       if (selected?.kind === "wire") {
         const wire = state.wires.find(w => w.id === selected.id);
@@ -203,8 +230,8 @@
   function render() {
     renderCanvas(); renderInspector();
     $("#project-name").textContent = state.name; $("#canvas-title").textContent = state.name; $("#tab-name").textContent = state.name; $("#design-name").value = state.name; $("#project-card-name").textContent = state.name;
-    $("#undo-btn").disabled = !undoStack.length; $("#redo-btn").disabled = !redoStack.length; $("#rotate-btn").disabled = selected?.kind !== "component"; $("#delete-btn").disabled = !selected;
-    $("#layer-list").innerHTML = state.components.map(c => '<button class="layer-row' + (selected?.id === c.id ? " active" : "") + '" data-layer="' + escapeHtml(c.id) + '">' + symbolPreview(c.type) + '<span>' + escapeHtml(c.ref) + '</span><small>' + defs[c.type].name + '</small></button>').join("");
+    $("#undo-btn").disabled = !undoStack.length; $("#redo-btn").disabled = !redoStack.length; $("#rotate-btn").disabled = !selectedComponentIds().length; $("#delete-btn").disabled = !selected;
+    $("#layer-list").innerHTML = state.components.map(c => '<button class="layer-row' + (isSelectedComponent(c.id) ? " active" : "") + '" data-layer="' + escapeHtml(c.id) + '">' + symbolPreview(c.type) + '<span>' + escapeHtml(c.ref) + '</span><small>' + defs[c.type].name + '</small></button>').join("");
   }
   function pointFromEvent(event) {
     const point = svg.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
@@ -235,9 +262,30 @@
   function fitView() { const b = bounds(); svg.setAttribute("viewBox", [b.x, b.y, Math.max(700, b.w), Math.max(520, b.h)].join(" ")); $("#zoom-value").textContent = "100%"; }
   function setTool(tool) { activeTool = tool; wireStart = null; $("#preview-layer").innerHTML = ""; svg.dataset.tool = tool; $$("[data-tool]").forEach(button => button.classList.toggle("active", button.dataset.tool === tool)); renderCanvas(); $("#status-text").textContent = tool === "wire" ? "连线工具：点击两个引脚" : tool === "pan" ? "拖动画布" : "就绪"; }
   function addComponent(type, x, y) { const before = snapshot(); const c = C.component(type, snapEnabled ? Math.round(x / gridSize) * gridSize : x, snapEnabled ? Math.round(y / gridSize) * gridSize : y, refFor(type)); state.components.push(c); selected = { kind: "component", id: c.id }; commit(before); render(); toast("已添加 " + defs[type].name); }
-  function rotateSelected() { if (selected?.kind !== "component") return; const c = state.components.find(c => c.id === selected.id); const before = snapshot(); c.rotation = (c.rotation + 90) % 360; commit(before); render(); }
-  function duplicateSelected() { if (selected?.kind !== "component") return; const original = state.components.find(c => c.id === selected.id); const before = snapshot(); const copy = C.clone(original); copy.id = C.id("c"); copy.ref = refFor(copy.type); copy.x += gridSize * 2; copy.y += gridSize * 2; state.components.push(copy); selected = { kind: "component", id: copy.id }; commit(before); render(); }
-  function deleteSelected() { if (!selected) return; const before = snapshot(); if (selected.kind === "component") { state.components = state.components.filter(c => c.id !== selected.id); state.wires = state.wires.filter(w => w.from.component !== selected.id && w.to.component !== selected.id); } else state.wires = state.wires.filter(w => w.id !== selected.id); selected = null; commit(before); render(); }
+  function rotateSelected() { const ids = selectedComponentIds(); if (!ids.length) return; const before = snapshot(); state.components.filter(c => ids.includes(c.id)).forEach(c => { c.rotation = (c.rotation + 90) % 360; }); commit(before); render(); }
+  function duplicateSelected() {
+    const ids = selectedComponentIds();
+    if (!ids.length) return;
+    const before = snapshot();
+    const copies = [];
+    state.components.filter(c => ids.includes(c.id)).forEach(original => {
+      const copy = C.clone(original); copy.id = C.id("c"); copy.x += gridSize * 2; copy.y += gridSize * 2;
+      state.components.push(copy); copy.ref = refFor(copy.type); copies.push(copy);
+    });
+    setMultiSelection(copies.map(c => c.id), []);
+    commit(before); render();
+    if (copies.length > 1) toast("已复制 " + copies.length + " 个元件");
+  }
+  function deleteSelected() {
+    if (!selected) return;
+    const componentIds = selectedComponentIds(), wireIds = selectedWireIds();
+    if (!componentIds.length && !wireIds.length) return;
+    const before = snapshot();
+    state.components = state.components.filter(c => !componentIds.includes(c.id));
+    state.wires = state.wires.filter(w => !wireIds.includes(w.id) && !componentIds.includes(w.from.component) && !componentIds.includes(w.to.component));
+    selected = null; commit(before); render();
+    if (componentIds.length > 1 || wireIds.length > 1) toast("已删除 " + componentIds.length + " 个元件、" + wireIds.length + " 条导线");
+  }
   function undo() { if (!undoStack.length) return; redoStack.push(snapshot()); state = undoStack.pop(); selected = null; wireStart = null; persist(); render(); }
   function redo() { if (!redoStack.length) return; undoStack.push(snapshot()); state = redoStack.pop(); selected = null; persist(); render(); }
   function connectPin(componentId, pinId) {
@@ -251,7 +299,7 @@
   function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
   function exportJson() { download(state.name.replace(/\s+/g, "-") + ".snets.json", JSON.stringify(state, null, 2), "application/json"); toast("工程 JSON 已导出"); }
   function exportSvg() {
-    const b = bounds(); const clone = svg.cloneNode(true); clone.setAttribute("viewBox", [b.x, b.y, b.w, b.h].join(" ")); clone.setAttribute("width", b.w); clone.setAttribute("height", b.h); clone.querySelector("#grid-bg")?.remove(); clone.querySelector("#preview-layer")?.remove(); clone.querySelectorAll(".selection-box,.selection-handle").forEach(el => el.remove());
+    const b = bounds(); const clone = svg.cloneNode(true); clone.setAttribute("viewBox", [b.x, b.y, b.w, b.h].join(" ")); clone.setAttribute("width", b.w); clone.setAttribute("height", b.h);     clone.querySelector("#grid-bg")?.remove(); clone.querySelector("#preview-layer")?.remove(); clone.querySelector("#marquee-layer")?.remove(); clone.querySelectorAll(".selection-box,.selection-handle").forEach(el => el.remove());
     download(state.name.replace(/\s+/g, "-") + ".svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + clone.outerHTML, "image/svg+xml"); toast("SVG 已导出");
   }
   function openDialog(title, html) { $("#dialog-title").textContent = title; $("#dialog-content").innerHTML = html; $("#app-dialog").showModal(); }
@@ -280,6 +328,32 @@
       }
     }
     return match;
+  }
+  function normalizeRect(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; }
+  function componentBox(c) { return { x: c.x - 72, y: c.y - 70, w: 144, h: 140 }; }
+  function rectsIntersect(a, b) { return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y; }
+  function pointInRect(point, rect) { return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h; }
+  function segmentIntersectsRect(a, b, rect) {
+    if (pointInRect(a, rect) || pointInRect(b, rect)) return true;
+    let low = 0, high = 1;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const p = [-dx, dx, -dy, dy];
+    const q = [a.x - rect.x, rect.x + rect.w - a.x, a.y - rect.y, rect.y + rect.h - a.y];
+    for (let index = 0; index < 4; index++) {
+      if (p[index] === 0) { if (q[index] < 0) return false; continue; }
+      const ratio = q[index] / p[index];
+      if (p[index] < 0) { if (ratio > high) return false; if (ratio > low) low = ratio; }
+      else { if (ratio < low) return false; if (ratio < high) high = ratio; }
+    }
+    return true;
+  }
+  function hitsMarquee(rect) {
+    const components = state.components.filter(c => rectsIntersect(componentBox(c), rect)).map(c => c.id);
+    const wires = state.wires.filter(wire => {
+      const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+      return points.some((point, index) => index > 0 && segmentIntersectsRect(points[index - 1], point, rect));
+    }).map(wire => wire.id);
+    return { components, wires };
   }
 
   function pinAtPoint(point) {
@@ -311,6 +385,7 @@
       if (hitPin) { event.stopPropagation(); connectPin(hitPin.component, hitPin.pin); return; }
       const hitWire = wireAtPoint(p);
       if (hitWire) {
+        if (event.shiftKey) { toggleSelection("wire", hitWire.id); render(); return; }
         selected = { kind: "wire", id: hitWire.id };
         drag = { kind: "wire-segment", id: hitWire.id, axis: closestSegmentAxis(hitWire, p), start: p, before: snapshot(), moved: false };
         svg.setPointerCapture(event.pointerId);
@@ -320,10 +395,26 @@
     }
     const componentNode = event.target.closest(".component");
     if (componentNode && activeTool !== "pan") {
-      const c = state.components.find(item => item.id === componentNode.dataset.id);
-      selected = { kind: "component", id: c.id }; drag = { kind: "component", id: c.id, offsetX: p.x - c.x, offsetY: p.y - c.y, before: snapshot(), moved: false }; svg.setPointerCapture(event.pointerId); render(); return;
+      const id = componentNode.dataset.id;
+      if (event.shiftKey) { toggleSelection("component", id); render(); return; }
+      const ids = selectedComponentIds();
+      const c = state.components.find(item => item.id === id);
+      if (ids.length > 1 && ids.includes(id)) {
+        const offsets = {};
+        state.components.filter(item => ids.includes(item.id)).forEach(item => { offsets[item.id] = { x: item.x, y: item.y }; });
+        drag = { kind: "components", ids, primary: id, offsets, start: p, before: snapshot(), moved: false };
+        svg.setPointerCapture(event.pointerId);
+        return;
+      }
+      selected = { kind: "component", id };
+      drag = { kind: "component", id, offsetX: p.x - c.x, offsetY: p.y - c.y, before: snapshot(), moved: false };
+      svg.setPointerCapture(event.pointerId); render(); return;
     }
     if (activeTool === "pan") { drag = { kind: "pan", point: p, viewBox: svg.getAttribute("viewBox").split(" ").map(Number) }; svg.setPointerCapture(event.pointerId); }
+    else if (activeTool === "select") {
+      drag = { kind: "marquee", start: p, current: p, additive: event.shiftKey, base: { components: selectedComponentIds(), wires: selectedWireIds() } };
+      svg.setPointerCapture(event.pointerId);
+    }
     else { selected = null; wireStart = null; render(); }
   });
   svg.addEventListener("pointermove", event => {
@@ -332,6 +423,30 @@
     if (nextPin?.component !== hoverPin?.component || nextPin?.pin !== hoverPin?.pin) { hoverPin = nextPin; syncHoverPin(); }
     if (wireStart) { const start = C.endpoint(state, wireStart); $("#preview-layer").innerHTML = '<path class="wire-preview" d="' + C.pathData(C.route(start, p)) + '"/>'; }
     if (!drag) return;
+    if (drag.kind === "marquee") {
+      drag.current = p;
+      const rect = normalizeRect(drag.start, p);
+      const hit = hitsMarquee(rect);
+      const base = drag.additive ? drag.base : { components: [], wires: [] };
+      setMultiSelection([...base.components, ...hit.components], [...base.wires, ...hit.wires]);
+      render();
+      drawMarquee(rect);
+      return;
+    }
+    if (drag.kind === "components") {
+      let dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+      if (snapEnabled) {
+        const origin = drag.offsets[drag.primary];
+        dx = Math.round((origin.x + dx) / gridSize) * gridSize - origin.x;
+        dy = Math.round((origin.y + dy) / gridSize) * gridSize - origin.y;
+      }
+      if (dx || dy) {
+        drag.moved = true;
+        state.components.filter(c => drag.ids.includes(c.id)).forEach(c => { const origin = drag.offsets[c.id]; c.x = origin.x + dx; c.y = origin.y + dy; });
+        renderCanvas();
+      }
+      return;
+    }
     if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled) { x = Math.round(x / gridSize) * gridSize; y = Math.round(y / gridSize) * gridSize; } if (c.x !== x || c.y !== y) { c.x = x; c.y = y; drag.moved = true; renderCanvas(); } }
     if (drag.kind === "wire-segment") {
       const distance = Math.hypot(p.x - drag.start.x, p.y - drag.start.y);
@@ -347,7 +462,18 @@
     if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); }
   });
   svg.addEventListener("pointerleave", () => { if (hoverPin) { hoverPin = null; syncHoverPin(); } });
-  svg.addEventListener("pointerup", event => { if (["component", "wire-segment"].includes(drag?.kind) && drag.moved) { commit(drag.before); render(); } drag = null; try { svg.releasePointerCapture(event.pointerId); } catch (_) {} });
+  svg.addEventListener("pointerup", event => {
+    if (drag?.kind === "marquee") {
+      const moved = Math.hypot(drag.current.x - drag.start.x, drag.current.y - drag.start.y);
+      if (moved < 4) selected = null;
+      else if (!selectedComponentIds().length && !selectedWireIds().length) selected = null;
+      drawMarquee(null);
+      drag = null; render(); try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
+      return;
+    }
+    if (["component", "components", "wire-segment"].includes(drag?.kind) && drag.moved) { commit(drag.before); render(); }
+    drag = null; try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
+  });
   svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; }, { passive: false });
 
   $("#component-grid").addEventListener("click", event => { const card = event.target.closest("[data-component-type]"); if (card) { const box = bounds(); addComponent(card.dataset.componentType, box.x + box.w / 2, box.y + box.h / 2); } });
@@ -386,7 +512,7 @@
     if (!value && input.dataset.prop === "ref") { renderInspector(); return; }
     c[input.dataset.prop] = value; commit(before); render();
   });
-  $("#properties-content").addEventListener("click", event => { const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "duplicate") duplicateSelected(); });
+  $("#properties-content").addEventListener("click", event => { const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "duplicate") duplicateSelected(); if (action === "delete") deleteSelected(); if (action === "clear") { selected = null; render(); } });
   $("#layer-list").addEventListener("click", event => { const row = event.target.closest("[data-layer]"); if (row) { selected = { kind: "component", id: row.dataset.layer }; render(); } });
   $$(".rail-item[data-panel]").forEach(button => button.addEventListener("click", () => { $$(".rail-item[data-panel]").forEach(b => b.classList.toggle("active", b === button)); ["library", "layers", "files"].forEach(name => $("#" + name + "-content").hidden = name !== button.dataset.panel); $("#library-title").textContent = { library: "元件库", layers: "电路图层", files: "工程文件" }[button.dataset.panel]; }));
   $$("[data-inspector]").forEach(button => button.addEventListener("click", () => { $$("[data-inspector]").forEach(b => b.classList.toggle("active", b === button)); $("#properties-content").hidden = button.dataset.inspector !== "properties"; $("#design-content").hidden = button.dataset.inspector !== "design"; }));
@@ -405,7 +531,7 @@
   $("#new-btn").onclick = newProject; $("#new-tab-btn").onclick = newProject;
   function loadDemo() { const before = snapshot(); state = C.demo(); ensureNetNames(); selected = { kind: "component", id: "pmos" }; commit(before); render(); fitView(); toast("CMOS 示例已加载"); }
   $("#demo-btn").onclick = loadDemo; $("#empty-demo").onclick = loadDemo; $("#check-btn").onclick = runCheck;
-  $("#help-btn").onclick = () => openDialog("使用帮助", '<p class="help-intro">从左侧元件库添加元件。拖动元件调整位置，点击两个引脚建立连线。</p><div class="shortcut-row"><span>选择工具</span><kbd>V</kbd></div><div class="shortcut-row"><span>连线工具</span><kbd>W</kbd></div><div class="shortcut-row"><span>旋转元件</span><kbd>R</kbd></div><div class="shortcut-row"><span>删除选择</span><kbd>Delete</kbd></div><div class="shortcut-row"><span>撤销 / 重做</span><span><kbd>Ctrl Z</kbd> <kbd>Ctrl Shift Z</kbd></span></div><div class="shortcut-row"><span>取消连线</span><kbd>Esc</kbd></div>');
+  $("#help-btn").onclick = () => openDialog("使用帮助", '<p class="help-intro">从左侧元件库添加元件。拖动元件调整位置，点击两个引脚建立连线。</p><div class="shortcut-row"><span>选择工具</span><kbd>V</kbd></div><div class="shortcut-row"><span>框选多个元件</span><kbd>Shift 加选</kbd></div><div class="shortcut-row"><span>连线工具</span><kbd>W</kbd></div><div class="shortcut-row"><span>旋转元件</span><kbd>R</kbd></div><div class="shortcut-row"><span>删除选择</span><kbd>Delete</kbd></div><div class="shortcut-row"><span>撤销 / 重做</span><span><kbd>Ctrl Z</kbd> <kbd>Ctrl Shift Z</kbd></span></div><div class="shortcut-row"><span>取消连线</span><kbd>Esc</kbd></div>');
   $("#close-dialog").onclick = () => $("#app-dialog").close();
   $("#dialog-content").addEventListener("click", event => { const id = event.target.closest("[data-issue-component]")?.dataset.issueComponent; if (id) { selected = { kind: "component", id }; $("#app-dialog").close(); render(); } });
   $("#open-library").onclick = () => $("#library-pane").classList.add("open"); $("#close-library").onclick = () => $("#library-pane").classList.remove("open");
@@ -414,7 +540,7 @@
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
     if (event.key === "Delete" || event.key === "Backspace") deleteSelected();
     if (event.key.toLowerCase() === "r") rotateSelected(); if (event.key.toLowerCase() === "w") setTool("wire"); if (event.key.toLowerCase() === "v") setTool("select"); if (event.key.toLowerCase() === "f") fitView();
-    if (event.key === "Escape") { wireStart = null; setTool("select"); renderCanvas(); }
+    if (event.key === "Escape") { wireStart = null; selected = null; setTool("select"); render(); }
     if (event.key === "/") { event.preventDefault(); $("#component-search").focus(); }
   });
   window.addEventListener("resize", () => { if (window.innerWidth < 620) $("#library-pane").classList.remove("open"); });
