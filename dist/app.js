@@ -39,12 +39,28 @@
   function hydrateIcons(scope = document) { scope.querySelectorAll("[data-icon]").forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
 
   let state;
-  try { state = C.validate(JSON.parse(localStorage.getItem("snets-circuit") || "null")); } catch (_) { state = C.demo(); }
-  let selected = state.components[1]
+  let pages = [];
+  let activePageId = "";
+  const makePageId = () => "page_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+  const pageRecord = (pageState, id = makePageId()) => ({ id, state: C.validate(pageState), selected: null, undoStack: [], redoStack: [] });
+  try {
+    const stored = JSON.parse(localStorage.getItem("snets-pages") || "null");
+    if (Array.isArray(stored?.pages)) pages = stored.pages.map(item => pageRecord(item.state, item.id));
+    activePageId = stored?.activePageId || "";
+  } catch (_) {}
+  if (!pages.length) {
+    let initialState;
+    try { initialState = C.validate(JSON.parse(localStorage.getItem("snets-circuit") || "null")); } catch (_) { initialState = C.demo(); }
+    pages = [pageRecord(initialState, "page_1")];
+  }
+  const initialPage = pages.find(page => page.id === activePageId) || pages[0];
+  activePageId = initialPage.id;
+  state = initialPage.state;
+  let selected = initialPage.selected || (state.components[1]
     ? { kind: "component", id: state.components[1].id }
     : state.components[0]
       ? { kind: "component", id: state.components[0].id }
-      : null;
+      : null);
   let activeTool = "select";
   let wireStart = null;
   let gridSize = 20;
@@ -55,6 +71,7 @@
   let redoStack = [];
   let drag = null;
   let hoverPin = null;
+  let hoverWire = null;
   let pointer = { x: 0, y: 0 };
   let toastTimer;
   const svg = $("#schematic");
@@ -64,6 +81,7 @@
   function applyDrawColor(hex) {
     const rgb = [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16));
     const mix = (amount, target) => "#" + rgb.map((channel, index) => Math.round(channel + (target[index] - channel) * amount).toString(16).padStart(2, "0")).join("");
+    const inverse = "#" + rgb.map(channel => (255 - channel).toString(16).padStart(2, "0")).join("");
     const white = [255, 255, 255], black = [0, 0, 0];
     const style = document.documentElement.style;
     style.setProperty("--draw", hex);
@@ -75,6 +93,9 @@
     style.setProperty("--draw-soft", mix(0.88, white));
     style.setProperty("--draw-grid", mix(0.76, white));
     style.setProperty("--draw-glow", hex + "66");
+    style.setProperty("--highlight", inverse);
+    style.setProperty("--highlight-soft", inverse + "24");
+    style.setProperty("--highlight-glow", inverse + "99");
   }
   function setDrawColor(value) {
     const color = isHexColor(value) ? value.toLowerCase() : DEFAULT_DRAW_COLOR;
@@ -84,12 +105,43 @@
     $("#theme-color-value").textContent = color.toUpperCase();
     $$("#color-swatches .swatch").forEach(button => button.classList.toggle("active", button.dataset.color.toLowerCase() === color));
   }
-  setDrawColor(localStorage.getItem("snets-draw-color") || DEFAULT_DRAW_COLOR);
+  let storedDrawColor = DEFAULT_DRAW_COLOR;
+  try { storedDrawColor = localStorage.getItem("snets-draw-color") || DEFAULT_DRAW_COLOR; } catch (_) {}
+  setDrawColor(storedDrawColor);
 
   function snapshot() { return C.clone(state); }
   function commit(before) { undoStack.push(before); if (undoStack.length > 80) undoStack.shift(); redoStack = []; persist(); }
+  function saveCurrentPage() {
+    const page = pages.find(item => item.id === activePageId);
+    if (page) { page.state = state; page.selected = selected; page.undoStack = undoStack; page.redoStack = redoStack; }
+  }
+  function renderTabs() {
+    const tabBar = $("#document-tabs");
+    if (!tabBar) return;
+    tabBar.querySelectorAll(".document-tab").forEach(tab => tab.remove());
+    const newTabButton = $("#new-tab-btn");
+    newTabButton.insertAdjacentHTML("beforebegin", pages.map(page => '<button class="document-tab' + (page.id === activePageId ? ' active' : '') + '" data-page="' + escapeHtml(page.id) + '"><span data-icon="file-circuit"></span><span' + (page.id === activePageId ? ' id="tab-name"' : '') + '>' + escapeHtml(page.state.name) + '</span><span class="tab-dot"></span></button>').join(""));
+    hydrateIcons(tabBar);
+  }
+  function switchPage(pageId) {
+    const page = pages.find(item => item.id === pageId);
+    if (!page || page.id === activePageId) return;
+    saveCurrentPage();
+    activePageId = page.id;
+    state = page.state;
+    selected = page.selected || null;
+    undoStack = page.undoStack || [];
+    redoStack = page.redoStack || [];
+    wireStart = null; hoverPin = null; hoverWire = null; drag = null;
+    renderTabs(); render(); fitView(); persist();
+  }
   function persist() {
-    try { localStorage.setItem("snets-circuit", JSON.stringify(state)); $("#save-status").innerHTML = icon("check-circle") + "已保存到本地"; } catch (_) { $("#save-status").textContent = "本地保存不可用"; }
+    saveCurrentPage();
+    try {
+      localStorage.setItem("snets-pages", JSON.stringify({ activePageId, pages: pages.map(page => ({ id: page.id, state: page.state })) }));
+      localStorage.setItem("snets-circuit", JSON.stringify(state));
+      $("#save-status").innerHTML = icon("check-circle") + "已保存到本地";
+    } catch (_) { $("#save-status").textContent = "本地保存不可用"; }
   }
   function toast(message) { clearTimeout(toastTimer); const el = $("#toast"); el.textContent = message; el.classList.add("show"); toastTimer = setTimeout(() => el.classList.remove("show"), 2300); }
   function selectedComponentIds() { if (!selected) return []; if (selected.kind === "component") return [selected.id]; if (selected.kind === "multi") return selected.components; return []; }
@@ -188,12 +240,15 @@
   }
   function renderCanvas() {
     if (!wireStart) $("#preview-layer").innerHTML = "";
-    const selectedWire = selected?.kind === "wire" ? state.wires.find(wire => wire.id === selected.id) : null;
-    const selectedNet = selectedWire?.net;
+    const selectedNets = new Set(state.wires.filter(wire => isSelectedWire(wire.id) && wire.net).map(wire => wire.net));
+    const hoverNet = state.wires.find(wire => wire.id === hoverWire)?.net || "";
     $("#wire-layer").innerHTML = state.wires.map(w => {
       const path = C.wirePath(state, w);
-      const highlighted = (selectedNet && w.net === selectedNet) || isSelectedWire(w.id);
-      return '<g class="wire' + (highlighted ? " selected" : "") + '" data-wire="' + escapeHtml(w.id) + '" data-net="' + escapeHtml(w.net || "") + '"><path class="wire-hit" d="' + path + '"/><path class="wire-line" d="' + path + '" pointer-events="none"/></g>';
+      const selectedHighlight = (w.net && selectedNets.has(w.net)) || isSelectedWire(w.id);
+      const hoveredHighlight = Boolean(hoverNet && w.net === hoverNet);
+      const labelPoint = hoveredHighlight ? wireLabelPoint(w) : null;
+      const label = labelPoint ? '<text class="net-hover-label" x="' + labelPoint.x + '" y="' + labelPoint.y + '" pointer-events="none">' + escapeHtml(w.net) + '</text>' : "";
+      return '<g class="wire' + (selectedHighlight ? " selected" : "") + (hoveredHighlight ? " net-hover" : "") + '" data-wire="' + escapeHtml(w.id) + '" data-net="' + escapeHtml(w.net || "") + '"><path class="wire-hit" d="' + path + '"/><path class="wire-line" d="' + path + '" pointer-events="none"/>' + label + '</g>';
     }).join("");
     $("#component-layer").innerHTML = state.components.map(componentMarkup).join("");
     $("#empty-canvas").hidden = state.components.length > 0;
@@ -268,13 +323,26 @@
     if (!ids.length) return;
     const before = snapshot();
     const copies = [];
+    const idMap = new Map();
     state.components.filter(c => ids.includes(c.id)).forEach(original => {
       const copy = C.clone(original); copy.id = C.id("c"); copy.x += gridSize * 2; copy.y += gridSize * 2;
-      state.components.push(copy); copy.ref = refFor(copy.type); copies.push(copy);
+      state.components.push(copy); copy.ref = refFor(copy.type); copies.push(copy); idMap.set(original.id, copy.id);
     });
-    setMultiSelection(copies.map(c => c.id), []);
+    const wireCopies = [];
+    state.wires.slice().forEach(original => {
+      if (!idMap.has(original.from.component) || !idMap.has(original.to.component)) return;
+      const copy = C.clone(original);
+      copy.id = C.id("w");
+      copy.from.component = idMap.get(original.from.component);
+      copy.to.component = idMap.get(original.to.component);
+      if (copy.manual) copy.manual.value += gridSize * 2;
+      if (/^net\d+$/.test(copy.net || "")) delete copy.net;
+      state.wires.push(copy); wireCopies.push(copy);
+    });
+    ensureNetNames();
+    setMultiSelection(copies.map(c => c.id), wireCopies.map(wire => wire.id));
     commit(before); render();
-    if (copies.length > 1) toast("已复制 " + copies.length + " 个元件");
+    if (copies.length > 1 || wireCopies.length) toast("已复制 " + copies.length + " 个元件、" + wireCopies.length + " 条导线");
   }
   function deleteSelected() {
     if (!selected) return;
@@ -296,11 +364,44 @@
     if (duplicate) { toast("这两个引脚已经连接"); wireStart = null; renderCanvas(); return; }
     const before = snapshot(); state.wires.push({ id: C.id("w"), from: wireStart, to: end }); ensureNetNames(); wireStart = null; commit(before); setTool("select"); render();
   }
-  function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
-  function exportJson() { download(state.name.replace(/\s+/g, "-") + ".snets.json", JSON.stringify(state, null, 2), "application/json"); toast("工程 JSON 已导出"); }
+  function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement("a"); a.href = url; a.download = name; a.style.display = "none"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 500); }
+  function exportJson() { download((state.name || "schematic").replace(/\s+/g, "-") + ".snets.json", JSON.stringify(state, null, 2), "application/json"); toast("工程 JSON 已导出"); }
   function exportSvg() {
-    const b = bounds(); const clone = svg.cloneNode(true); clone.setAttribute("viewBox", [b.x, b.y, b.w, b.h].join(" ")); clone.setAttribute("width", b.w); clone.setAttribute("height", b.h);     clone.querySelector("#grid-bg")?.remove(); clone.querySelector("#preview-layer")?.remove(); clone.querySelector("#marquee-layer")?.remove(); clone.querySelectorAll(".selection-box,.selection-handle").forEach(el => el.remove());
-    download(state.name.replace(/\s+/g, "-") + ".svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + clone.outerHTML, "image/svg+xml"); toast("SVG 已导出");
+    const b = bounds();
+    // 导出前临时清除交互态，得到干净的静态图
+    const savedSelection = selected, savedHover = hoverWire, savedWireStart = wireStart;
+    selected = null; hoverWire = null; wireStart = null; renderCanvas();
+    const clone = svg.cloneNode(true);
+    // 将每个元素的计算样式内联（解析 var() 与 styles.css 中的规则），脱离外部样式表
+    const styleProps = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-miterlimit", "opacity", "font-family", "font-size", "font-weight", "letter-spacing", "text-anchor", "dominant-baseline", "paint-order", "visibility"];
+    const inlineStyles = (srcNode, dstNode) => {
+      const cs = getComputedStyle(srcNode);
+      dstNode.setAttribute("style", styleProps.map(p => { const v = cs.getPropertyValue(p); return v ? p + ":" + v : ""; }).filter(Boolean).join(";"));
+      const srcChildren = srcNode.children, dstChildren = dstNode.children;
+      for (let i = 0; i < srcChildren.length && i < dstChildren.length; i++) inlineStyles(srcChildren[i], dstChildren[i]);
+    };
+    inlineStyles(svg, clone);
+    // 遍历完成后恢复画布交互态
+    selected = savedSelection; hoverWire = savedHover; wireStart = savedWireStart; renderCanvas();
+    // 移除交互层与辅助元素
+    clone.querySelector("#grid-bg")?.remove();
+    clone.querySelector("#preview-layer")?.remove();
+    clone.querySelector("#marquee-layer")?.remove();
+    clone.querySelectorAll(".selection-box,.selection-handle,.wire-hit,.net-hover-label,.wire-preview").forEach(el => el.remove());
+    // 清理类名与数据属性（样式已内联）
+    clone.querySelectorAll("[class],[data-wire],[data-net],[data-component],[data-pin]").forEach(el => { el.removeAttribute("class"); ["data-wire", "data-net", "data-component", "data-pin"].forEach(attr => el.removeAttribute(attr)); });
+    clone.removeAttribute("data-tool"); clone.removeAttribute("tabindex"); clone.removeAttribute("role");
+    // 视口与画布尺寸
+    clone.setAttribute("viewBox", [b.x, b.y, b.w, b.h].join(" "));
+    clone.setAttribute("width", b.w); clone.setAttribute("height", b.h);
+    // 补白色背景（原背景在 HTML 容器上，SVG 本身透明）
+    const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bg.setAttribute("x", b.x); bg.setAttribute("y", b.y); bg.setAttribute("width", b.w); bg.setAttribute("height", b.h); bg.setAttribute("fill", "#ffffff");
+    const defs = clone.querySelector("defs");
+    clone.insertBefore(bg, defs ? defs.nextSibling : clone.firstChild);
+    const name = (state.name || "schematic").replace(/\s+/g, "-");
+    download(name + ".svg", '<?xml version="1.0" encoding="UTF-8"?>\n' + clone.outerHTML, "image/svg+xml");
+    toast("SVG 已导出");
   }
   function openDialog(title, html) { $("#dialog-title").textContent = title; $("#dialog-content").innerHTML = html; $("#app-dialog").showModal(); }
   function runCheck() {
@@ -317,9 +418,19 @@
     t = Math.max(0, Math.min(1, t));
     return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
   }
+  function wireLabelPoint(wire) {
+    const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+    let best = { length: -1, x: points[0].x, y: points[0].y };
+    for (let index = 1; index < points.length; index++) {
+      const a = points[index - 1], b = points[index];
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      if (length > best.length) best = { length, x: (a.x + b.x) / 2 + 8, y: (a.y + b.y) / 2 - 8 };
+    }
+    return best;
+  }
   function wireAtPoint(point) {
     let match = null;
-    let best = 9;
+    let best = screenPixelsToSvg(9);
     for (const wire of state.wires) {
       const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
       for (let index = 1; index < points.length; index++) {
@@ -357,11 +468,12 @@
   }
 
   function pinAtPoint(point) {
+    const radius = screenPixelsToSvg(13);
     for (let index = state.components.length - 1; index >= 0; index--) {
       const component = state.components[index];
       for (const pin of defs[component.type].pins) {
         const position = C.pinPoint(component, pin.id);
-        if (Math.hypot(point.x - position.x, point.y - position.y) <= 13) return { component: component.id, pin: pin.id };
+        if (Math.hypot(point.x - position.x, point.y - position.y) <= radius) return { component: component.id, pin: pin.id };
       }
     }
     return null;
@@ -376,16 +488,44 @@
     if (node) node.classList.add("hover");
     svg.style.cursor = hoverPin ? "crosshair" : "";
   }
+  function screenPixelsToSvg(pixels) {
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return pixels;
+    const scaleX = Math.hypot(matrix.a, matrix.b);
+    const scaleY = Math.hypot(matrix.c, matrix.d);
+    const scale = (scaleX + scaleY) / 2;
+    return scale ? pixels / scale : pixels;
+  }
+  function beginComponentsDrag(ids, primary, start, pointerId) {
+    const offsets = {};
+    const moving = new Set(ids);
+    state.components.filter(item => moving.has(item.id)).forEach(item => { offsets[item.id] = { x: item.x, y: item.y }; });
+    const selectedWires = new Set(selectedWireIds());
+    const wireOffsets = {};
+    state.wires.forEach(wire => {
+      if (!wire.manual) return;
+      const internal = moving.has(wire.from.component) && moving.has(wire.to.component);
+      if (internal || selectedWires.has(wire.id)) wireOffsets[wire.id] = { axis: wire.manual.axis, value: wire.manual.value };
+    });
+    drag = { kind: "components", ids, primary, offsets, wireOffsets, start, before: snapshot(), moved: false };
+    svg.setPointerCapture(pointerId);
+  }
 
   svg.addEventListener("pointerdown", event => {
     const p = pointFromEvent(event);
     if (hoverPin) { hoverPin = null; syncHoverPin(); }
+    hoverWire = null;
     if (activeTool !== "pan") {
       const hitPin = pinAtPoint(p);
       if (hitPin) { event.stopPropagation(); connectPin(hitPin.component, hitPin.pin); return; }
       const hitWire = wireAtPoint(p);
       if (hitWire) {
         if (event.shiftKey) { toggleSelection("wire", hitWire.id); render(); return; }
+        const ids = selectedComponentIds();
+        if (selected?.kind === "multi" && isSelectedWire(hitWire.id) && ids.length) {
+          beginComponentsDrag(ids, ids[0], p, event.pointerId);
+          return;
+        }
         selected = { kind: "wire", id: hitWire.id };
         drag = { kind: "wire-segment", id: hitWire.id, axis: closestSegmentAxis(hitWire, p), start: p, before: snapshot(), moved: false };
         svg.setPointerCapture(event.pointerId);
@@ -399,11 +539,8 @@
       if (event.shiftKey) { toggleSelection("component", id); render(); return; }
       const ids = selectedComponentIds();
       const c = state.components.find(item => item.id === id);
-      if (ids.length > 1 && ids.includes(id)) {
-        const offsets = {};
-        state.components.filter(item => ids.includes(item.id)).forEach(item => { offsets[item.id] = { x: item.x, y: item.y }; });
-        drag = { kind: "components", ids, primary: id, offsets, start: p, before: snapshot(), moved: false };
-        svg.setPointerCapture(event.pointerId);
+      if (selected?.kind === "multi" && ids.includes(id)) {
+        beginComponentsDrag(ids, id, p, event.pointerId);
         return;
       }
       selected = { kind: "component", id };
@@ -421,6 +558,8 @@
     const p = pointFromEvent(event); pointer = p; $("#cursor-position").textContent = "X: " + Math.round(p.x) + "   Y: " + Math.round(p.y);
     const nextPin = !drag && activeTool !== "pan" ? pinAtPoint(p) : null;
     if (nextPin?.component !== hoverPin?.component || nextPin?.pin !== hoverPin?.pin) { hoverPin = nextPin; syncHoverPin(); }
+    const nextWire = !drag && activeTool !== "pan" && !nextPin ? wireAtPoint(p) : null;
+    if ((nextWire?.id || null) !== hoverWire) { hoverWire = nextWire?.id || null; renderCanvas(); }
     if (wireStart) { const start = C.endpoint(state, wireStart); $("#preview-layer").innerHTML = '<path class="wire-preview" d="' + C.pathData(C.route(start, p)) + '"/>'; }
     if (!drag) return;
     if (drag.kind === "marquee") {
@@ -440,9 +579,15 @@
         dx = Math.round((origin.x + dx) / gridSize) * gridSize - origin.x;
         dy = Math.round((origin.y + dy) / gridSize) * gridSize - origin.y;
       }
-      if (dx || dy) {
+      const changed = state.components.some(c => drag.ids.includes(c.id) && (c.x !== drag.offsets[c.id].x + dx || c.y !== drag.offsets[c.id].y + dy))
+        || state.wires.some(wire => drag.wireOffsets[wire.id] && wire.manual?.value !== drag.wireOffsets[wire.id].value + (drag.wireOffsets[wire.id].axis === "x" ? dx : dy));
+      if (changed) {
         drag.moved = true;
         state.components.filter(c => drag.ids.includes(c.id)).forEach(c => { const origin = drag.offsets[c.id]; c.x = origin.x + dx; c.y = origin.y + dy; });
+        state.wires.forEach(wire => {
+          const origin = drag.wireOffsets[wire.id];
+          if (origin) wire.manual = { axis: origin.axis, value: origin.value + (origin.axis === "x" ? dx : dy) };
+        });
         renderCanvas();
       }
       return;
@@ -461,11 +606,18 @@
     }
     if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); }
   });
-  svg.addEventListener("pointerleave", () => { if (hoverPin) { hoverPin = null; syncHoverPin(); } });
+  svg.addEventListener("pointerleave", () => {
+    const hadHover = hoverPin || hoverWire;
+    hoverPin = null; hoverWire = null;
+    if (hadHover) renderCanvas();
+  });
   svg.addEventListener("pointerup", event => {
     if (drag?.kind === "marquee") {
       const moved = Math.hypot(drag.current.x - drag.start.x, drag.current.y - drag.start.y);
-      if (moved < 4) selected = null;
+      if (moved < 4) {
+        if (drag.additive) setMultiSelection(drag.base.components, drag.base.wires);
+        else selected = null;
+      }
       else if (!selectedComponentIds().length && !selectedWireIds().length) selected = null;
       drawMarquee(null);
       drag = null; render(); try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
@@ -527,8 +679,16 @@
   document.addEventListener("click", event => { if (!event.target.closest("#export-menu") && !event.target.closest("#export-btn")) $("#export-menu").hidden = true; });
   $("#save-project-btn").onclick = exportJson; $("#import-btn").onclick = () => $("#file-input").click();
   $("#file-input").addEventListener("change", async event => { const file = event.target.files[0]; if (!file) return; try { const imported = C.validate(JSON.parse(await file.text())); const before = snapshot(); state = imported; ensureNetNames(); selected = null; commit(before); fitView(); render(); toast("工程已打开"); } catch (error) { openDialog("无法打开工程", '<p class="muted-copy">' + escapeHtml(error.message) + '</p>'); } event.target.value = ""; });
-  function newProject() { const before = snapshot(); state = { version: 1, name: "未命名原理图", components: [], wires: [] }; selected = null; commit(before); render(); fitView(); }
+  function newProject() {
+    saveCurrentPage();
+    const page = { id: makePageId(), state: { version: 1, name: "未命名原理图 " + (pages.length + 1), components: [], wires: [] }, selected: null, undoStack: [], redoStack: [] };
+    pages.push(page);
+    activePageId = "";
+    switchPage(page.id);
+    toast("已新建原理图页面");
+  }
   $("#new-btn").onclick = newProject; $("#new-tab-btn").onclick = newProject;
+  $("#document-tabs").addEventListener("click", event => { const tab = event.target.closest("[data-page]"); if (tab) switchPage(tab.dataset.page); });
   function loadDemo() { const before = snapshot(); state = C.demo(); ensureNetNames(); selected = { kind: "component", id: "pmos" }; commit(before); render(); fitView(); toast("CMOS 示例已加载"); }
   $("#demo-btn").onclick = loadDemo; $("#empty-demo").onclick = loadDemo; $("#check-btn").onclick = runCheck;
   $("#help-btn").onclick = () => openDialog("使用帮助", '<p class="help-intro">从左侧元件库添加元件。拖动元件调整位置，点击两个引脚建立连线。</p><div class="shortcut-row"><span>选择工具</span><kbd>V</kbd></div><div class="shortcut-row"><span>框选多个元件</span><kbd>Shift 加选</kbd></div><div class="shortcut-row"><span>连线工具</span><kbd>W</kbd></div><div class="shortcut-row"><span>旋转元件</span><kbd>R</kbd></div><div class="shortcut-row"><span>删除选择</span><kbd>Delete</kbd></div><div class="shortcut-row"><span>撤销 / 重做</span><span><kbd>Ctrl Z</kbd> <kbd>Ctrl Shift Z</kbd></span></div><div class="shortcut-row"><span>取消连线</span><kbd>Esc</kbd></div>');
@@ -539,7 +699,7 @@
     if (event.target.matches("input,select,textarea")) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); event.shiftKey ? redo() : undo(); return; }
     if (event.key === "Delete" || event.key === "Backspace") deleteSelected();
-    if (event.key.toLowerCase() === "r") rotateSelected(); if (event.key.toLowerCase() === "w") setTool("wire"); if (event.key.toLowerCase() === "v") setTool("select"); if (event.key.toLowerCase() === "f") fitView();
+    if (event.key.toLowerCase() === "r") rotateSelected(); if (event.key.toLowerCase() === "c" && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); duplicateSelected(); } if (event.key.toLowerCase() === "w") setTool("wire"); if (event.key.toLowerCase() === "v") setTool("select"); if (event.key.toLowerCase() === "f") fitView();
     if (event.key === "Escape") { wireStart = null; selected = null; setTool("select"); render(); }
     if (event.key === "/") { event.preventDefault(); $("#component-search").focus(); }
   });
@@ -552,5 +712,5 @@
     register({ name: "check_schematic_connections", title: "检查原理图连接", description: "检查当前原理图中的悬空引脚。", inputSchema: { type: "object", properties: {}, additionalProperties: false }, annotations: { readOnlyHint: true }, execute() { return { issues: C.check(state), componentCount: state.components.length, wireCount: state.wires.length }; } });
   }
 
-  ensureNetNames(); hydrateIcons(); renderLibrary(); render(); requestAnimationFrame(fitView); persist(); registerWebMcp();
+  ensureNetNames(); hydrateIcons(); renderLibrary(); renderTabs(); render(); requestAnimationFrame(fitView); persist(); registerWebMcp();
 })();
