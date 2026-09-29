@@ -54,6 +54,7 @@
   let undoStack = [];
   let redoStack = [];
   let drag = null;
+  let hoverPin = null;
   let pointer = { x: 0, y: 0 };
   let toastTimer;
   const svg = $("#schematic");
@@ -180,6 +181,7 @@
     $("#component-stats").textContent = state.components.length + " 个元件";
     $("#wire-stats").textContent = state.wires.length + " 条连线";
     $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (selected?.id === c.id ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
+    syncHoverPin();
   }
   function renderInspector() {
     const content = $("#properties-content");
@@ -290,9 +292,20 @@
     }
     return null;
   }
+  function pinNode(end) {
+    if (!end) return null;
+    return svg.querySelector('.component-pin[data-component="' + end.component + '"][data-pin="' + end.pin + '"]');
+  }
+  function syncHoverPin() {
+    svg.querySelectorAll(".component-pin.hover").forEach(node => node.classList.remove("hover"));
+    const node = pinNode(hoverPin);
+    if (node) node.classList.add("hover");
+    svg.style.cursor = hoverPin ? "crosshair" : "";
+  }
 
   svg.addEventListener("pointerdown", event => {
     const p = pointFromEvent(event);
+    if (hoverPin) { hoverPin = null; syncHoverPin(); }
     if (activeTool !== "pan") {
       const hitPin = pinAtPoint(p);
       if (hitPin) { event.stopPropagation(); connectPin(hitPin.component, hitPin.pin); return; }
@@ -315,6 +328,8 @@
   });
   svg.addEventListener("pointermove", event => {
     const p = pointFromEvent(event); pointer = p; $("#cursor-position").textContent = "X: " + Math.round(p.x) + "   Y: " + Math.round(p.y);
+    const nextPin = !drag && activeTool !== "pan" ? pinAtPoint(p) : null;
+    if (nextPin?.component !== hoverPin?.component || nextPin?.pin !== hoverPin?.pin) { hoverPin = nextPin; syncHoverPin(); }
     if (wireStart) { const start = C.endpoint(state, wireStart); $("#preview-layer").innerHTML = '<path class="wire-preview" d="' + C.pathData(C.route(start, p)) + '"/>'; }
     if (!drag) return;
     if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled) { x = Math.round(x / gridSize) * gridSize; y = Math.round(y / gridSize) * gridSize; } if (c.x !== x || c.y !== y) { c.x = x; c.y = y; drag.moved = true; renderCanvas(); } }
@@ -331,6 +346,7 @@
     }
     if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); }
   });
+  svg.addEventListener("pointerleave", () => { if (hoverPin) { hoverPin = null; syncHoverPin(); } });
   svg.addEventListener("pointerup", event => { if (["component", "wire-segment"].includes(drag?.kind) && drag.moved) { commit(drag.before); render(); } drag = null; try { svg.releasePointerCapture(event.pointerId); } catch (_) {} });
   svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; }, { passive: false });
 
