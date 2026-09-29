@@ -113,11 +113,13 @@
   }
   function symbolPreview(type) { return '<svg class="symbol-preview" viewBox="-75 -70 150 140" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">' + defs[type].body + '</svg>'; }
 
+  const categoryLabels = { all: "全部元件", basic: "基础元件", transistor: "晶体管", device: "器件" };
   function renderLibrary() {
     const query = $("#component-search").value.trim().toLowerCase();
     const entries = Object.entries(defs).filter(([type, d]) => (category === "all" || d.category === category) && (type + " " + d.name + " " + d.title).toLowerCase().includes(query));
     $("#component-grid").innerHTML = entries.map(([type, d]) => '<button class="component-card" data-component-type="' + type + '" draggable="true" title="添加' + d.name + '"><span class="card-short">' + d.prefix + '</span>' + symbolPreview(type) + '<span class="component-title">' + d.name + '</span></button>').join("") || '<p class="muted-copy" style="grid-column:span 2">没有找到匹配的元件</p>';
     $("#library-count").textContent = entries.length;
+    $("#library-section-label").innerHTML = (categoryLabels[category] || categoryLabels.all) + ' <span>点击或拖入画布</span>';
   }
   function componentMarkup(c) {
     const d = defs[c.type];
