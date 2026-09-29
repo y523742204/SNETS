@@ -58,6 +58,33 @@
   let toastTimer;
   const svg = $("#schematic");
 
+  const DEFAULT_DRAW_COLOR = "#5084c9";
+  const isHexColor = value => /^#[0-9a-f]{6}$/i.test(value || "");
+  function applyDrawColor(hex) {
+    const rgb = [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16));
+    const mix = (amount, target) => "#" + rgb.map((channel, index) => Math.round(channel + (target[index] - channel) * amount).toString(16).padStart(2, "0")).join("");
+    const white = [255, 255, 255], black = [0, 0, 0];
+    const style = document.documentElement.style;
+    style.setProperty("--draw", hex);
+    style.setProperty("--draw-strong", mix(0.3, black));
+    style.setProperty("--draw-text", mix(0.38, black));
+    style.setProperty("--draw-line", mix(0.3, white));
+    style.setProperty("--draw-mid", mix(0.5, white));
+    style.setProperty("--draw-value", mix(0.45, white));
+    style.setProperty("--draw-soft", mix(0.88, white));
+    style.setProperty("--draw-grid", mix(0.76, white));
+    style.setProperty("--draw-glow", hex + "66");
+  }
+  function setDrawColor(value) {
+    const color = isHexColor(value) ? value.toLowerCase() : DEFAULT_DRAW_COLOR;
+    try { localStorage.setItem("snets-draw-color", color); } catch (_) {}
+    applyDrawColor(color);
+    $("#theme-color").value = color;
+    $("#theme-color-value").textContent = color.toUpperCase();
+    $$("#color-swatches .swatch").forEach(button => button.classList.toggle("active", button.dataset.color.toLowerCase() === color));
+  }
+  setDrawColor(localStorage.getItem("snets-draw-color") || DEFAULT_DRAW_COLOR);
+
   function snapshot() { return C.clone(state); }
   function commit(before) { undoStack.push(before); if (undoStack.length > 80) undoStack.shift(); redoStack = []; persist(); }
   function persist() {
@@ -152,7 +179,7 @@
     $("#dot-grid").setAttribute("width", gridSize); $("#dot-grid").setAttribute("height", gridSize);
     $("#component-stats").textContent = state.components.length + " 个元件";
     $("#wire-stats").textContent = state.wires.length + " 条连线";
-    $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" stroke="#9eb5d0" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" fill="' + (selected?.id === c.id ? "#dfa58d" : "#afbfce") + '" rx="3"/>').join("");
+    $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (selected?.id === c.id ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
   }
   function renderInspector() {
     const content = $("#properties-content");
@@ -233,25 +260,46 @@
     openDialog("电路检查", summary + rows + '<p class="muted-copy">此检查验证连接完整性，不进行电气仿真。</p>');
   }
 
+  function distanceToSegment(point, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    let t = lengthSquared ? ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared : 0;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+  }
+  function wireAtPoint(point) {
+    let match = null;
+    let best = 9;
+    for (const wire of state.wires) {
+      const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+      for (let index = 1; index < points.length; index++) {
+        const distance = distanceToSegment(point, points[index - 1], points[index]);
+        if (distance <= best) { best = distance; match = wire; }
+      }
+    }
+    return match;
+  }
+
   svg.addEventListener("pointerdown", event => {
+    const p = pointFromEvent(event);
     const pin = event.target.closest(".component-pin");
     if (pin) { event.stopPropagation(); connectPin(pin.dataset.component, pin.dataset.pin); return; }
+    if (activeTool !== "pan") {
+      const hitWire = wireAtPoint(p);
+      if (hitWire) {
+        selected = { kind: "wire", id: hitWire.id };
+        drag = { kind: "wire-segment", id: hitWire.id, axis: closestSegmentAxis(hitWire, p), start: p, before: snapshot(), moved: false };
+        svg.setPointerCapture(event.pointerId);
+        render();
+        return;
+      }
+    }
     const componentNode = event.target.closest(".component");
     if (componentNode && activeTool !== "pan") {
-      const c = state.components.find(item => item.id === componentNode.dataset.id); const p = pointFromEvent(event);
+      const c = state.components.find(item => item.id === componentNode.dataset.id);
       selected = { kind: "component", id: c.id }; drag = { kind: "component", id: c.id, offsetX: p.x - c.x, offsetY: p.y - c.y, before: snapshot(), moved: false }; svg.setPointerCapture(event.pointerId); render(); return;
     }
-    const wire = event.target.closest(".wire");
-    if (wire && activeTool !== "pan") {
-      const item = state.wires.find(candidate => candidate.id === wire.dataset.wire);
-      const p = pointFromEvent(event);
-      selected = { kind: "wire", id: item.id };
-      drag = { kind: "wire-segment", id: item.id, axis: closestSegmentAxis(item, p), start: p, before: snapshot(), moved: false };
-      svg.setPointerCapture(event.pointerId);
-      render();
-      return;
-    }
-    if (activeTool === "pan") { const p = pointFromEvent(event); drag = { kind: "pan", point: p, viewBox: svg.getAttribute("viewBox").split(" ").map(Number) }; svg.setPointerCapture(event.pointerId); }
+    if (activeTool === "pan") { drag = { kind: "pan", point: p, viewBox: svg.getAttribute("viewBox").split(" ").map(Number) }; svg.setPointerCapture(event.pointerId); }
     else { selected = null; wireStart = null; render(); }
   });
   svg.addEventListener("pointermove", event => {
@@ -317,6 +365,9 @@
   $$("[data-inspector]").forEach(button => button.addEventListener("click", () => { $$("[data-inspector]").forEach(b => b.classList.toggle("active", b === button)); $("#properties-content").hidden = button.dataset.inspector !== "properties"; $("#design-content").hidden = button.dataset.inspector !== "design"; }));
   $("#design-name").addEventListener("change", event => { const value = event.target.value.trim(); if (!value) return render(); const before = snapshot(); state.name = value.slice(0, 80); commit(before); render(); });
   $("#grid-select").addEventListener("change", event => { gridSize = Number(event.target.value); $("#grid-size").textContent = gridSize; renderCanvas(); });
+  $("#theme-color").addEventListener("input", event => setDrawColor(event.target.value));
+  $("#color-reset").addEventListener("click", () => setDrawColor(DEFAULT_DRAW_COLOR));
+  $("#color-swatches").addEventListener("click", event => { const swatch = event.target.closest("[data-color]"); if (swatch) setDrawColor(swatch.dataset.color); });
   $("#project-name").onclick = () => { const value = prompt("工程名称", state.name); if (value?.trim()) { const before = snapshot(); state.name = value.trim().slice(0, 80); commit(before); render(); } };
   $("#export-btn").onclick = event => { const menu = $("#export-menu"); menu.hidden = !menu.hidden; event.stopPropagation(); };
   $("#export-menu").addEventListener("click", event => { const type = event.target.closest("[data-export]")?.dataset.export; if (type === "json") exportJson(); if (type === "svg") exportSvg(); $("#export-menu").hidden = true; });
