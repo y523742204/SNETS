@@ -280,11 +280,22 @@
     return match;
   }
 
+  function pinAtPoint(point) {
+    for (let index = state.components.length - 1; index >= 0; index--) {
+      const component = state.components[index];
+      for (const pin of defs[component.type].pins) {
+        const position = C.pinPoint(component, pin.id);
+        if (Math.hypot(point.x - position.x, point.y - position.y) <= 13) return { component: component.id, pin: pin.id };
+      }
+    }
+    return null;
+  }
+
   svg.addEventListener("pointerdown", event => {
     const p = pointFromEvent(event);
-    const pin = event.target.closest(".component-pin");
-    if (pin) { event.stopPropagation(); connectPin(pin.dataset.component, pin.dataset.pin); return; }
     if (activeTool !== "pan") {
+      const hitPin = pinAtPoint(p);
+      if (hitPin) { event.stopPropagation(); connectPin(hitPin.component, hitPin.pin); return; }
       const hitWire = wireAtPoint(p);
       if (hitWire) {
         selected = { kind: "wire", id: hitWire.id };
