@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f7f8fa"><meta name="description" content="SNETS IC 原理图工作台：放置元件、连接引脚、编辑参数并保存你的电路设计。">
+<title>SNETS · IC 原理图工作台</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ec7145'/%3E%3Cpath d='M10 10h12v12H10zM6 12h4m-4 8h4m12-8h4m-4 8h4M12 6v4m8-4v4m-8 12v4m8-4v4' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./styles.css"><script defer src="./component-library.js"></script><script defer src="./model.js"></script><script defer src="./app.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="./" aria-label="SNETS 首页"><span class="brand-mark" data-icon="chip"></span><strong>SNETS<span class="brand-dot">.</span></strong><span class="brand-sub">CIRCUIT STUDIO</span></a>
+  <div class="project-crumb"><span class="slash">/</span><span>我的工作空间</span><span data-icon="chevron-right"></span><button id="project-name" title="修改项目名称">CMOS 反相器</button><span class="local-badge">本地</span></div>
+  <div class="top-actions"><span id="save-status" class="save-status"><span data-icon="check-circle"></span>已保存到本地</span><button class="button soft" id="export-btn"><span data-icon="upload"></span><span>导出</span><span data-icon="chevron-down"></span></button><button class="button primary" id="check-btn"><span data-icon="circuit"></span><span>检查电路</span></button><span class="user-avatar" title="本地工作空间">S</span></div>
+</header>
+<div class="app-layout">
+  <nav class="rail" aria-label="工作台导航">
+    <button class="rail-item active" data-panel="library" title="元件库"><span data-icon="blocks"></span><span>元件</span></button>
+    <button class="rail-item" data-panel="layers" title="电路元件列表"><span data-icon="layers"></span><span>图层</span></button>
+    <button class="rail-item" data-panel="files" title="工程文件"><span data-icon="folder"></span><span>工程</span></button>
+    <div class="rail-bottom"><button class="rail-item" id="help-btn" title="使用帮助"><span data-icon="help"></span><span>帮助</span></button></div>
+  </nav>
+  <aside class="library-pane" id="library-pane">
+    <div class="pane-heading"><h2 id="library-title">元件库</h2><span class="count-badge" id="library-count">10</span><button class="icon-button mobile-close" id="close-library" aria-label="关闭元件库" data-icon="close"></button></div>
+    <section id="library-content"><div class="search-field"><span data-icon="search"></span><input id="component-search" type="search" placeholder="搜索元件…" aria-label="搜索元件"><kbd>/</kbd></div>
+      <div class="category-tabs" aria-label="元件分类"><button class="active" data-category="all">全部</button><button data-category="transistor">晶体管</button><button data-category="basic">基础</button></div>
+      <div class="library-section-label">基础元件 <span>点击或拖入画布</span></div><div class="component-grid" id="component-grid"></div>
+      <div class="library-note"><span data-icon="mouse"></span><p>从这里开始你的设计<br><span>将元件拖到画布，点击引脚连接。</span></p></div>
+    </section>
+    <section id="layers-content" hidden><p class="pane-description">当前原理图中的全部元件</p><div id="layer-list"></div></section>
+    <section id="files-content" hidden><div class="project-card"><span data-icon="file-circuit"></span><strong id="project-card-name">CMOS 反相器</strong><small>当前工程 · 自动保存在此浏览器</small></div><button class="button full" id="save-project-btn"><span data-icon="save"></span>保存工程 JSON</button><button class="button full" id="import-btn"><span data-icon="folder"></span>打开工程 JSON</button><button class="button full" id="new-btn"><span data-icon="plus"></span>新建原理图</button><button class="text-button" id="demo-btn">加载 CMOS 示例</button></section>
+    <div class="library-footer"><span class="library-indicator"></span>标准元件库 <span>v1.0</span></div>
+  </aside>
+  <main class="editor">
+    <div class="document-tabs"><div class="document-tab"><span data-icon="file-circuit"></span><span id="tab-name">CMOS 反相器</span><span class="tab-dot"></span></div><button class="icon-button" id="new-tab-btn" title="新建原理图" data-icon="plus"></button><span class="document-type">SCHEMATIC EDITOR</span></div>
+    <div class="toolbar">
+      <button class="icon-button mobile-library" id="open-library" title="打开元件库" data-icon="blocks"></button>
+      <div class="tool-group"><button class="tool-button active" data-tool="select" title="选择 (V)" aria-label="选择工具"><span data-icon="cursor"></span><span>选择</span></button><button class="tool-button" data-tool="wire" title="连线 (W)" aria-label="连线工具"><span data-icon="wire"></span><span>连线</span></button><button class="tool-button" data-tool="pan" title="移动画布 (H)" aria-label="移动画布"><span data-icon="hand"></span></button></div>
+      <div class="toolbar-divider"></div><div class="tool-group"><button class="icon-button" id="undo-btn" title="撤销 (Ctrl+Z)" aria-label="撤销" data-icon="undo"></button><button class="icon-button" id="redo-btn" title="重做 (Ctrl+Shift+Z)" aria-label="重做" data-icon="redo"></button></div>
+      <div class="toolbar-divider"></div><div class="tool-group"><button class="icon-button" id="rotate-btn" title="旋转元件 (R)" aria-label="旋转元件" data-icon="rotate"></button><button class="icon-button" id="delete-btn" title="删除选中对象 (Delete)" aria-label="删除选中对象" data-icon="trash"></button></div>
+      <div class="toolbar-spacer"></div><button class="toggle-button active" id="snap-btn" aria-pressed="true" title="网格吸附"><span data-icon="magnet"></span><span>吸附</span></button><button class="toggle-button" id="align-grid-btn" title="将全部元件和线段对齐到网格"><span data-icon="align-grid"></span><span>对齐网格</span></button><button class="icon-button active" id="grid-btn" aria-pressed="true" title="显示网格" data-icon="grid"></button><button class="icon-button" id="fit-btn" title="适应画布 (F)" aria-label="适应画布" data-icon="maximize"></button>
+    </div>
+    <div class="canvas-area" id="canvas-area">
+      <div class="canvas-caption"><span class="eyebrow">DESIGN / 001</span><h1 id="canvas-title">CMOS 反相器</h1><p id="canvas-subtitle">互补型 MOS 逻辑电路</p></div>
+      <svg id="schematic" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="交互原理图画布，点击元件选择，拖动元件调整布局" tabindex="0">
+        <defs><pattern id="dot-grid" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.8" fill="#cfd4dc"/></pattern></defs>
+        <rect id="grid-bg" x="-100000" y="-100000" width="200000" height="200000" fill="url(#dot-grid)"></rect>
+        <g id="annotation-layer"></g><g id="wire-layer"></g><g id="component-layer"></g><g id="preview-layer" pointer-events="none"></g>
+      </svg>
+      <div class="canvas-shortcut" id="canvas-hint"><span data-icon="info"></span><span>点击引脚开始连线，<kbd>Esc</kbd> 取消操作</span></div>
+      <div class="zoom-control"><button id="zoom-out" aria-label="缩小" data-icon="minus"></button><button id="zoom-value" title="恢复 100% 缩放">100%</button><button id="zoom-in" aria-label="放大" data-icon="plus"></button><span></span><button id="zoom-fit" aria-label="适应画布" data-icon="maximize"></button></div>
+      <div class="mini-map" aria-hidden="true"><svg id="minimap" viewBox="0 0 900 660"></svg><span>画布概览</span></div>
+      <div class="empty-canvas" id="empty-canvas" hidden><span data-icon="chip"></span><h2>从第一个元件开始</h2><p>点击左侧元件，或将它拖到画布中。</p><button class="button" id="empty-demo">打开 CMOS 示例</button></div>
+    </div>
+    <footer class="statusbar"><div><span class="status-dot"></span><span id="status-text">就绪</span><span class="status-separator"></span><span id="component-stats">9 个元件</span><span id="wire-stats">9 条连线</span></div><div><span id="cursor-position">X: 0 &nbsp; Y: 0</span><span class="status-separator"></span><span>网格 <b id="grid-size">20</b> px</span><span class="unit-label">SVG</span></div></footer>
+  </main>
+  <aside class="inspector" id="inspector">
+    <div class="inspector-tabs"><button class="active" data-inspector="properties">属性</button><button data-inspector="design">设计</button></div>
+    <div id="properties-content"></div>
+    <div id="design-content" hidden><div class="inspector-section"><div class="section-heading">原理图设置</div><label class="field-label" for="design-name">工程名称</label><input id="design-name" class="text-input" value="CMOS 反相器"><label class="field-label" for="grid-select">网格间距</label><select id="grid-select" class="text-input"><option value="10">10 px · 精细</option><option value="20" selected>20 px · 标准</option><option value="40">40 px · 宽松</option></select></div><div class="inspector-section"><div class="section-heading">电气连接</div><p class="muted-copy">导线交叉不会自动连接。相同引脚上的多条导线属于同一网络。</p><p class="muted-copy">连接检查用于发现悬空引脚与电源短接，不进行电路仿真。</p></div></div>
+    <div class="inspector-footer"><span data-icon="shield"></span><span>你的设计仅保存在当前浏览器</span></div>
+  </aside>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="export-menu" class="dropdown" hidden><div class="dropdown-label">导出当前原理图</div><button data-export="json"><span data-icon="file-code"></span><span>工程文件<small>JSON · 可再次编辑</small></span></button><button data-export="svg"><span data-icon="image"></span><span>矢量图<small>SVG · 清晰无损</small></span></button></div>
+<dialog id="app-dialog"><div class="dialog-heading"><h2 id="dialog-title"></h2><button class="icon-button" id="close-dialog" aria-label="关闭" data-icon="close"></button></div><div id="dialog-content"></div></dialog>
+<input type="file" id="file-input" accept=".json,application/json" hidden>
+</body></html>
