@@ -5,7 +5,8 @@
 <meta name="theme-color" content="#f7f8fa"><meta name="description" content="SNETS IC 原理图工作台：放置元件、连接引脚、编辑参数并保存你的电路设计。">
 <title>SNETS · IC 原理图工作台</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ec7145'/%3E%3Cpath d='M10 10h12v12H10zM6 12h4m-4 8h4m12-8h4m-4 8h4M12 6v4m8-4v4m-8 12v4m8-4v4' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="./styles.css"><script defer src="./component-library.js"></script><script defer src="./model.js"></script><script defer src="./app.js"></script>
+<link rel="stylesheet" href="./styles.css?v=4"><script defer src="./component-library.js?v=4"></script><script defer src="./spectre-parser.js?v=4"></script><script defer src="./model.js?v=4"></script><script defer src="./app.js?v=4"></script>
+<style>.net-label{font-family:"IBM Plex Mono",monospace;font-size:10px;fill:var(--draw-text);paint-order:stroke;stroke:#fff;stroke-width:5px;stroke-linejoin:round}.junction-dot{fill:var(--draw);stroke:#fff;stroke-width:1.5px}.model-mapping-choice{display:grid;grid-template-columns:minmax(110px,auto) minmax(180px,1fr);align-items:center;gap:6px 10px;margin-top:10px}.model-mapping-choice small{grid-column:2;color:var(--muted);font-weight:400}</style>
 </head>
 <body>
 <header class="topbar">
@@ -28,7 +29,7 @@
       <div class="library-note"><span data-icon="mouse"></span><p>从这里开始你的设计<br><span>将元件拖到画布，点击引脚连接。</span></p></div>
     </section>
     <section id="layers-content" hidden><p class="pane-description">当前原理图中的全部元件</p><div id="layer-list"></div></section>
-    <section id="files-content" hidden><div class="project-card"><span data-icon="file-circuit"></span><strong id="project-card-name">CMOS 反相器</strong><small>当前工程 · 自动保存在此浏览器</small></div><button class="button full" id="save-project-btn"><span data-icon="save"></span>保存工程 JSON</button><button class="button full" id="import-btn"><span data-icon="folder"></span>打开工程 JSON</button><button class="button full" id="new-btn"><span data-icon="plus"></span>新建原理图</button><button class="text-button" id="demo-btn">加载 CMOS 示例</button></section>
+    <section id="files-content" hidden><div class="project-card"><span data-icon="file-circuit"></span><strong id="project-card-name">CMOS 反相器</strong><small id="project-card-meta">当前工程 · 自动保存在此浏览器</small></div><button class="button full primary" id="spectre-import-btn"><span data-icon="circuit"></span>导入 Spectre 网表</button><button class="button full" id="dependency-btn"><span data-icon="folder"></span>选择依赖文件或文件夹</button><p class="dependency-note" id="dependency-note">尚未选择补充依赖</p><button class="button full" id="save-project-btn"><span data-icon="save"></span>保存工程 JSON</button><button class="button full" id="import-btn"><span data-icon="folder"></span>打开工程 JSON</button><button class="button full" id="new-btn"><span data-icon="plus"></span>新建原理图</button><button class="text-button" id="demo-btn">加载 CMOS 示例</button></section>
     <div class="library-footer"><span class="library-indicator"></span>标准元件库 <span>v1.0</span></div>
   </aside>
   <main class="editor">
@@ -38,10 +39,10 @@
       <div class="tool-group"><button class="tool-button active" data-tool="select" title="选择 (V)" aria-label="选择工具"><span data-icon="cursor"></span><span>选择</span></button><button class="tool-button" data-tool="wire" title="连线 (W)" aria-label="连线工具"><span data-icon="wire"></span><span>连线</span></button><button class="tool-button" data-tool="pan" title="移动画布 (H)" aria-label="移动画布"><span data-icon="hand"></span></button></div>
       <div class="toolbar-divider"></div><div class="tool-group"><button class="icon-button" id="undo-btn" title="撤销 (Ctrl+Z)" aria-label="撤销" data-icon="undo"></button><button class="icon-button" id="redo-btn" title="重做 (Ctrl+Shift+Z)" aria-label="重做" data-icon="redo"></button></div>
       <div class="toolbar-divider"></div><div class="tool-group"><button class="icon-button" id="rotate-btn" title="旋转元件 (R)" aria-label="旋转元件" data-icon="rotate"></button><button class="icon-button" id="delete-btn" title="删除选中对象 (Delete)" aria-label="删除选中对象" data-icon="trash"></button></div>
-      <div class="toolbar-spacer"></div><button class="toggle-button active" id="snap-btn" aria-pressed="true" title="网格吸附"><span data-icon="magnet"></span><span>吸附</span></button><button class="toggle-button" id="align-grid-btn" title="将全部元件和线段对齐到网格"><span data-icon="align-grid"></span><span>对齐网格</span></button><button class="icon-button active" id="grid-btn" aria-pressed="true" title="显示网格" data-icon="grid"></button><button class="icon-button" id="fit-btn" title="适应画布 (F)" aria-label="适应画布" data-icon="maximize"></button>
+      <div class="toolbar-spacer"></div><button class="toggle-button active" id="snap-btn" aria-pressed="true" title="网格吸附"><span data-icon="magnet"></span><span>吸附</span></button><button class="toggle-button" id="organize-btn" title="整理全部器件，并重新生成避障正交连线"><span data-icon="layers"></span><span>整理</span></button><button class="toggle-button" id="align-grid-btn" title="将全部元件和线段对齐到网格"><span data-icon="align-grid"></span><span>对齐网格</span></button><button class="icon-button active" id="grid-btn" aria-pressed="true" title="显示网格" data-icon="grid"></button><button class="icon-button" id="fit-btn" title="适应画布 (F)" aria-label="适应画布" data-icon="maximize"></button>
     </div>
     <div class="canvas-area" id="canvas-area">
-      <div class="canvas-caption"><span class="eyebrow">DESIGN / 001</span><h1 id="canvas-title">CMOS 反相器</h1><p id="canvas-subtitle">互补型 MOS 逻辑电路</p></div>
+      <div class="canvas-caption"><span class="eyebrow">DESIGN / 001</span><h1 id="canvas-title">CMOS 反相器</h1><p id="canvas-subtitle">互补型 MOS 逻辑电路</p><div class="hierarchy-breadcrumbs" id="hierarchy-breadcrumbs" hidden></div></div>
       <svg id="schematic" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="交互原理图画布，点击元件选择，拖动元件调整布局" tabindex="0">
         <defs><pattern id="dot-grid" x="0" y="0" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="0.8" fill="#cfd4dc"/></pattern></defs>
         <rect id="grid-bg" x="-100000" y="-100000" width="200000" height="200000" fill="url(#dot-grid)"></rect>
@@ -65,4 +66,7 @@
 <div id="export-menu" class="dropdown" hidden><div class="dropdown-label">导出当前原理图</div><button data-export="json"><span data-icon="file-code"></span><span>工程文件<small>JSON · 可再次编辑</small></span></button><button data-export="svg"><span data-icon="image"></span><span>矢量图<small>SVG · 清晰无损</small></span></button></div>
 <dialog id="app-dialog"><div class="dialog-heading"><h2 id="dialog-title"></h2><button class="icon-button" id="close-dialog" aria-label="关闭" data-icon="close"></button></div><div id="dialog-content"></div></dialog>
 <input type="file" id="file-input" accept=".json,application/json" hidden>
+<input type="file" id="spectre-input" hidden>
+<input type="file" id="dependency-input" multiple hidden>
+<input type="file" id="dependency-folder-input" webkitdirectory multiple hidden>
 </body></html>

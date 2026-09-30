@@ -41,14 +41,14 @@
 
     inductor: {
       name: "电感",
-      title: "Inductor",
+      title: "Spectre inductor",
       category: "basic",
       prefix: "L",
       value: "10n",
-      pins: [{ id: "1", name: "端口 1", x: 0, y: -60 }, { id: "2", name: "端口 2", x: 0, y: 60 }],
+      pins: [{ id: "1", name: "端口 1", x: -60, y: 0 }, { id: "2", name: "端口 2", x: 60, y: 0 }],
       fields: [["value", "电感值", "H"]],
       defaults: {},
-      body: '<path d="M0-60V-32C-16-32-16-14 0-14C16-14 16 4 0 4C-16 4-16 22 0 22C16 22 16 40 0 40V60"/>'
+      body: '<path d="M-60 0H-36C-36-22-12-22-12 0C-12-22 12-22 12 0C12-22 36-22 36 0H60"/>'
     },
 
     capacitor: {
@@ -153,6 +153,21 @@
       body: '<path d="M-25 -12 H10 L25 0 10 12 H-25 ZM25 0 H40"/>'
     },
 
+    port: {
+      name: "射频端口 PORT",
+      title: "Spectre two-terminal port",
+      category: "basic",
+      prefix: "PORT",
+      value: "50",
+      pins: [
+        { id: "1", name: "信号端", x: 0, y: -60 },
+        { id: "2", name: "参考端", x: 0, y: 60 }
+      ],
+      fields: [["value", "端口阻抗", "Ω"], ["num", "端口编号", ""]],
+      defaults: { num: "1" },
+      body: '<path d="M0-60V-30M0 30V60"/><circle cx="0" cy="0" r="30"/><text x="0" y="4" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">PORT</text>'
+    },
+
     nmos: {
       name: "NMOS",
       title: "N 沟道 MOSFET",
@@ -227,16 +242,16 @@
       prefix: "T",
       value: "1:1",
       pins: [
-        { id: "P1", name: "初级上端", x: -60, y: -50 },
+        { id: "P1", name: "初级上端", x: -60, y: -40 },
         { id: "PCT", name: "初级中心抽头", x: -60, y: 0 },
-        { id: "P2", name: "初级下端", x: -60, y: 50 },
-        { id: "S1", name: "次级上端", x: 60, y: -50 },
+        { id: "P2", name: "初级下端", x: -60, y: 40 },
+        { id: "S1", name: "次级上端", x: 60, y: -40 },
         { id: "SCT", name: "次级中心抽头", x: 60, y: 0 },
-        { id: "S2", name: "次级下端", x: 60, y: 50 }
+        { id: "S2", name: "次级下端", x: 60, y: 40 }
       ],
       fields: [["value", "匝数比", ""]],
       defaults: {},
-      body: '<path d="M-60-50H-28C-12-50-12-34-28-34C-44-34-44-18-28-18C-12-18-12-2-28-2H-60M-60 0H-28M-28 2C-12 2-12 18-28 18C-44 18-44 34-28 34C-12 34-12 50-28 50H-60M60-50H28C12-50 12-34 28-34C44-34 44-18 28-18C12-18 12-2 28-2H60M60 0H28M28 2C12 2 12 18 28 18C44 18 44 34 28 34C12 34 12 50 28 50H60M-5-58V58M5-58V58"/>'
+      body: '<path d="M-60-40H-28C-12-40-12-28-28-28C-44-28-44-16-28-16C-12-16-12-4-28-4H-60M-60 0H-28M-28 4C-12 4-12 16-28 16C-44 16-44 28-28 28C-12 28-12 40-28 40H-60M60-40H28C12-40 12-28 28-28C44-28 44-16 28-16C12-16 12-4 28-4H60M60 0H28M28 4C12 4 12 16 28 16C44 16 44 28 28 28C12 28 12 40 28 40H60M-5-48V48M5-48V48"/>'
     },
 
     nport: {
@@ -254,6 +269,30 @@
       fields: [["value", "Touchstone 文件", ""], ["z0", "参考阻抗", "Ω"]],
       defaults: { z0: "50" },
       body: '<rect x="-38" y="-60" width="76" height="120" rx="3"/><path d="M-60-40H-38M-60 40H-38M38-40H60M38 40H60"/><text x="0" y="-4" text-anchor="middle" fill="currentColor" stroke="none" font-size="14">N-PORT</text><text x="0" y="16" text-anchor="middle" fill="currentColor" stroke="none" font-size="10">Touchstone</text>'
+    },
+
+    diode: {
+      name: "二极管",
+      title: "Diode",
+      category: "device",
+      prefix: "D",
+      value: "diode",
+      pins: [{ id: "A", name: "阳极", x: -60, y: 0 }, { id: "K", name: "阴极", x: 60, y: 0 }],
+      fields: [["value", "型号", ""]],
+      defaults: {},
+      body: '<path d="M-60 0H-18M18 0H60M-18-28V28L18 0ZM18-28V28"/>'
+    },
+
+    generic: {
+      name: "通用器件",
+      title: "Imported Spectre device",
+      category: "device",
+      prefix: "X",
+      value: "device",
+      pins: [],
+      fields: [],
+      defaults: {},
+      body: '<rect x="-45" y="-50" width="90" height="100" rx="5"/><text x="0" y="4" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">DEVICE</text>'
     }
   };
 })(typeof window !== "undefined" ? window : globalThis);

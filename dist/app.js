@@ -1,8 +1,9 @@
-(function () {
+(async function () {
   "use strict";
   const $ = selector => document.querySelector(selector);
   const $$ = selector => [...document.querySelectorAll(selector)];
   const C = window.Circuit;
+  const S = window.SpectreImport;
   const defs = C.definitions;
   const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -38,14 +39,36 @@
   const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || icons.chip) + '</svg>';
   function hydrateIcons(scope = document) { scope.querySelectorAll("[data-icon]").forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
 
+  function openWorkspaceDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) return reject(new Error("IndexedDB 不可用"));
+      const request = indexedDB.open("snets-workspace", 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("workspace");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("无法打开本地数据库"));
+    });
+  }
+  async function idbGet(key) {
+    const db = await openWorkspaceDb();
+    return new Promise((resolve, reject) => { const request = db.transaction("workspace").objectStore("workspace").get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+  }
+  async function idbPut(key, value) {
+    const db = await openWorkspaceDb();
+    return new Promise((resolve, reject) => { const request = db.transaction("workspace", "readwrite").objectStore("workspace").put(value, key); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); });
+  }
+
   let state;
   let pages = [];
   let activePageId = "";
   const makePageId = () => "page_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
-  const pageRecord = (pageState, id = makePageId()) => ({ id, state: C.validate(pageState), selected: null, undoStack: [], redoStack: [] });
+  const pageRecord = (pageState, id = makePageId(), project = null, circuitId = null) => {
+    const cleanProject = project ? S.validateProject(project) : null;
+    const activeCircuit = cleanProject ? (circuitId || cleanProject.top) : null;
+    return { id, project: cleanProject, circuitId: activeCircuit, state: cleanProject ? C.validate(S.view(cleanProject, activeCircuit)) : C.validate(pageState), selected: null, undoStack: [], redoStack: [] };
+  };
   try {
-    const stored = JSON.parse(localStorage.getItem("snets-pages") || "null");
-    if (Array.isArray(stored?.pages)) pages = stored.pages.map(item => pageRecord(item.state, item.id));
+    const stored = await idbGet("pages") || JSON.parse(localStorage.getItem("snets-pages") || "null");
+    if (Array.isArray(stored?.pages)) pages = stored.pages.map(item => pageRecord(item.state, item.id, item.project, item.circuitId));
     activePageId = stored?.activePageId || "";
   } catch (_) {}
   if (!pages.length) {
@@ -72,6 +95,8 @@
   let drag = null;
   let hoverPin = null;
   let hoverWire = null;
+  let renderedComponentIds = null;
+  let renderedWireIds = null;
   let pointer = { x: 0, y: 0 };
   let toastTimer;
   const svg = $("#schematic");
@@ -113,14 +138,20 @@
   function commit(before) { undoStack.push(before); if (undoStack.length > 80) undoStack.shift(); redoStack = []; persist(); }
   function saveCurrentPage() {
     const page = pages.find(item => item.id === activePageId);
-    if (page) { page.state = state; page.selected = selected; page.undoStack = undoStack; page.redoStack = redoStack; }
+    if (page) {
+      page.state = state; page.selected = selected; page.undoStack = undoStack; page.redoStack = redoStack;
+      if (page.project) S.syncLayout(page.project, page.circuitId, state);
+    }
   }
+  const activePage = () => pages.find(item => item.id === activePageId);
+  const activeProject = () => activePage()?.project || null;
+  const activeCircuitId = () => activePage()?.circuitId || null;
   function renderTabs() {
     const tabBar = $("#document-tabs");
     if (!tabBar) return;
     tabBar.querySelectorAll(".document-tab").forEach(tab => tab.remove());
     const newTabButton = $("#new-tab-btn");
-    newTabButton.insertAdjacentHTML("beforebegin", pages.map(page => '<button class="document-tab' + (page.id === activePageId ? ' active' : '') + '" data-page="' + escapeHtml(page.id) + '"><span data-icon="file-circuit"></span><span' + (page.id === activePageId ? ' id="tab-name"' : '') + '>' + escapeHtml(page.state.name) + '</span><span class="tab-dot"></span></button>').join(""));
+    newTabButton.insertAdjacentHTML("beforebegin", pages.map(page => '<button class="document-tab' + (page.id === activePageId ? ' active' : '') + '" data-page="' + escapeHtml(page.id) + '"><span data-icon="file-circuit"></span><span' + (page.id === activePageId ? ' id="tab-name"' : '') + '>' + escapeHtml(page.project?.name || page.state.name) + '</span><span class="tab-dot"></span></button>').join(""));
     hydrateIcons(tabBar);
   }
   function switchPage(pageId) {
@@ -135,13 +166,25 @@
     wireStart = null; hoverPin = null; hoverWire = null; drag = null;
     renderTabs(); render(); fitView(); persist();
   }
+  function openCircuit(circuitId, focusRef) {
+    const page = activePage();
+    if (!page?.project || !page.project.circuits.some(circuit => circuit.id === circuitId)) return;
+    saveCurrentPage();
+    page.circuitId = circuitId;
+    page.state = C.validate(S.view(page.project, circuitId));
+    state = page.state; selected = null; undoStack = []; redoStack = []; wireStart = null;
+    renderTabs(); render(); fitView(); persist();
+    if (focusRef) toast("已进入 " + focusRef);
+  }
   function persist() {
     saveCurrentPage();
+    const payload = { activePageId, pages: pages.map(page => ({ id: page.id, state: page.project ? null : page.state, project: page.project, circuitId: page.circuitId })) };
+    idbPut("pages", payload).then(() => { $("#save-status").innerHTML = icon("check-circle") + "已保存到本地"; }).catch(() => { $("#save-status").textContent = "本地保存失败 · 可导出 JSON"; });
     try {
-      localStorage.setItem("snets-pages", JSON.stringify({ activePageId, pages: pages.map(page => ({ id: page.id, state: page.state })) }));
-      localStorage.setItem("snets-circuit", JSON.stringify(state));
-      $("#save-status").innerHTML = icon("check-circle") + "已保存到本地";
-    } catch (_) { $("#save-status").textContent = "本地保存不可用"; }
+      const legacy = pages.filter(page => !page.project).map(page => ({ id: page.id, state: page.state }));
+      localStorage.setItem("snets-pages", JSON.stringify({ activePageId, pages: legacy }));
+      if (!activeProject()) localStorage.setItem("snets-circuit", JSON.stringify(state));
+    } catch (_) {}
   }
   function toast(message) { clearTimeout(toastTimer); const el = $("#toast"); el.textContent = message; el.classList.add("show"); toastTimer = setTimeout(() => el.classList.remove("show"), 2300); }
   function selectedComponentIds() { if (!selected) return []; if (selected.kind === "component") return [selected.id]; if (selected.kind === "multi") return selected.components; return []; }
@@ -212,7 +255,8 @@
       used.add(name);
     }
   }
-  function symbolPreview(type) { return '<svg class="symbol-preview" viewBox="-75 -70 150 140" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">' + defs[type].body + '</svg>'; }
+  const definitionFor = component => C.definition(component) || defs.generic;
+  function symbolPreview(value) { const d = typeof value === "string" ? defs[value] : definitionFor(value); return '<svg class="symbol-preview" viewBox="-75 -70 150 140" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">' + (d.body || defs.generic.body) + '</svg>'; }
 
   const categoryLabels = { all: "全部元件", basic: "基础元件", transistor: "晶体管", device: "器件" };
   function renderLibrary() {
@@ -223,48 +267,99 @@
     $("#library-section-label").innerHTML = (categoryLabels[category] || categoryLabels.all) + ' <span>点击或拖入画布</span>';
   }
   function componentMarkup(c) {
-    const d = defs[c.type];
+    const d = definitionFor(c);
     const selectedClass = isSelectedComponent(c.id) ? " selected" : "";
     const isPort = c.type === "input" || c.type === "output" || c.type === "bidirectional";
     const isPower = c.type === "vdd" || c.type === "gnd";
     const labelX = isPower || isPort ? 0 : 45;
     const labelY = isPower ? (c.type === "vdd" ? -31 : 42) : (isPort ? -25 : -17);
     const main = isPower ? (c.type === "vdd" ? "VDD" : "GND") : (isPort ? c.value : c.ref);
-    const detail = c.type === "pmos" || c.type === "nmos" ? "W=" + c.w + "μ  L=" + c.l + "μ" : (isPower || isPort ? "" : c.value);
-    const box = selectedClass ? '<rect class="selection-box" x="-73" y="-72" width="146" height="144" rx="3"/>' : "";
+    const detail = c.dynamicPins ? (c.group ? c.memberCount + " 个完全相同的实例" : c.master) : (c.type === "pmos" || c.type === "nmos" ? "W=" + c.w + "μ  L=" + c.l + "μ" : (isPower || isPort ? "" : c.value));
+    const dw = d.width || 144, dh = d.height || 140;
+    const box = selectedClass ? '<rect class="selection-box" x="' + (-dw / 2 - 2) + '" y="' + (-dh / 2 - 2) + '" width="' + (dw + 4) + '" height="' + (dh + 4) + '" rx="3"/>' : "";
     const pins = d.pins.map(pin => {
       const point = C.pinPoint(c, pin.id);
       return '<g class="component-pin' + (isConnected(c.id, pin.id) ? " connected" : "") + (wireStart?.component === c.id && wireStart.pin === pin.id ? " wiring" : "") + '" data-component="' + escapeHtml(c.id) + '" data-pin="' + escapeHtml(pin.id) + '" transform="translate(' + (point.x - c.x) + " " + (point.y - c.y) + ')"><circle r="13" fill="transparent"/><circle class="pin-dot" r="3"/><title>' + escapeHtml(c.ref + " · " + pin.name) + '</title></g>';
     }).join("");
-    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="-72" y="-70" width="144" height="140" fill="transparent"/><g class="symbol-body" transform="rotate(' + c.rotation + ')">' + d.body + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
+    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="' + (-dw / 2) + '" y="' + (-dh / 2) + '" width="' + dw + '" height="' + dh + '" fill="transparent"/><g class="symbol-body" transform="rotate(' + c.rotation + ')">' + (d.body || defs.generic.body) + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
   }
   function renderCanvas() {
     if (!wireStart) $("#preview-layer").innerHTML = "";
+    const base = svg.viewBox.baseVal;
+    const viewport = base && base.width > 0 ? { x: base.x - 240, y: base.y - 240, w: base.width + 480, h: base.height + 480 } : null;
+    const visibleComponents = viewport ? state.components.filter(component => rectsIntersect(componentBox(component), viewport)) : state.components;
+    renderedComponentIds = new Set(visibleComponents.map(component => component.id));
+    const visibleWires = viewport ? state.wires.filter(wire => {
+      if (renderedComponentIds.has(wire.from.component) || renderedComponentIds.has(wire.to.component)) return true;
+      const points = C.wireRoute(state, wire);
+      return points.some((point, index) => index > 0 && segmentIntersectsRect(points[index - 1], point, viewport));
+    }) : state.wires;
+    renderedWireIds = new Set(visibleWires.map(wire => wire.id));
     const selectedNets = new Set(state.wires.filter(wire => isSelectedWire(wire.id) && wire.net).map(wire => wire.net));
     const hoverNet = state.wires.find(wire => wire.id === hoverWire)?.net || "";
-    $("#wire-layer").innerHTML = state.wires.map(w => {
+    $("#wire-layer").innerHTML = visibleWires.map(w => {
       const path = C.wirePath(state, w);
       const selectedHighlight = (w.net && selectedNets.has(w.net)) || isSelectedWire(w.id);
       const hoveredHighlight = Boolean(hoverNet && w.net === hoverNet);
-      const labelPoint = hoveredHighlight ? wireLabelPoint(w) : null;
-      const label = labelPoint ? '<text class="net-hover-label" x="' + labelPoint.x + '" y="' + labelPoint.y + '" pointer-events="none">' + escapeHtml(w.net) + '</text>' : "";
-      return '<g class="wire' + (selectedHighlight ? " selected" : "") + (hoveredHighlight ? " net-hover" : "") + '" data-wire="' + escapeHtml(w.id) + '" data-net="' + escapeHtml(w.net || "") + '"><path class="wire-hit" d="' + path + '"/><path class="wire-line" d="' + path + '" pointer-events="none"/>' + label + '</g>';
+      const labelPoint = (hoveredHighlight || w.showLabel) ? wireLabelPoint(w) : null;
+      const label = labelPoint ? '<text class="' + (w.showLabel ? "net-label" : "net-hover-label") + '" x="' + labelPoint.x + '" y="' + labelPoint.y + '" pointer-events="none">' + escapeHtml(w.net) + '</text>' : "";
+      const junctions = w.auto && !w.manual ? C.wireRoute(state, w).slice(1, -1).map(point => '<circle class="junction-dot" cx="' + point.x + '" cy="' + point.y + '" r="3" pointer-events="none"/>').join("") : "";
+      return '<g class="wire' + (selectedHighlight ? " selected" : "") + (hoveredHighlight ? " net-hover" : "") + '" data-wire="' + escapeHtml(w.id) + '" data-net="' + escapeHtml(w.net || "") + '"><path class="wire-hit" d="' + path + '"/><path class="wire-line" d="' + path + '" pointer-events="none"/>' + junctions + label + '</g>';
     }).join("");
-    $("#component-layer").innerHTML = state.components.map(componentMarkup).join("");
+    $("#component-layer").innerHTML = visibleComponents.map(componentMarkup).join("");
     $("#empty-canvas").hidden = state.components.length > 0;
     $("#grid-bg").setAttribute("fill", showGrid ? "url(#dot-grid)" : "transparent");
     $("#dot-grid").setAttribute("width", gridSize); $("#dot-grid").setAttribute("height", gridSize);
     $("#component-stats").textContent = state.components.length + " 个元件";
     $("#wire-stats").textContent = state.wires.length + " 条连线";
-    $("#minimap").innerHTML = state.wires.map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (isSelectedComponent(c.id) ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
+    const wireStep = Math.max(1, Math.ceil(state.wires.length / 500)), componentStep = Math.max(1, Math.ceil(state.components.length / 500));
+    $("#minimap").innerHTML = state.wires.filter((_, index) => index % wireStep === 0).map(w => '<path d="' + C.wirePath(state, w) + '" fill="none" style="stroke:var(--draw);opacity:.7" stroke-width="4"/>').join("") + state.components.filter((_, index) => index % componentStep === 0).map(c => '<rect x="' + (c.x - 16) + '" y="' + (c.y - 20) + '" width="32" height="40" style="fill:' + (isSelectedComponent(c.id) ? "var(--draw-strong)" : "var(--draw-line)") + '" rx="3"/>').join("");
     syncHoverPin();
+  }
+  const SPECTRE_SYMBOLS = [["generic", "通用方框"], ["port", "PORT（2 端）"], ["nmos", "NMOS（4 端）"], ["pmos", "PMOS（4 端）"], ["resistor", "电阻（2 端）"], ["capacitor", "电容（2/3 端）"], ["diode", "二极管（2 端）"], ["inductor", "电感（2 端）"], ["voltage", "电压源（2 端）"], ["current", "电流源（2 端）"], ["nport", "NPORT"], ["transformer", "变压器"], ["subcircuit", "子电路方框"]];
+  const spectreSymbolOptions = selected => SPECTRE_SYMBOLS.map(([value, label]) => '<option value="' + value + '"' + (selected === value ? ' selected' : '') + '>' + label + '</option>').join("");
+  const suggestedSymbol = (project, model) => {
+    for (const circuit of project.circuits) {
+      const instance = circuit.instances.find(item => item.master === model);
+      if (instance) return project.mappings[model]?.symbol || instance.mapping?.symbol || "generic";
+    }
+    return "generic";
+  };
+
+  function importedInspector(component) {
+    const project = activeProject();
+    const circuit = project && S.getCircuit(project, activeCircuitId());
+    if (!project || !circuit || !component?.dynamicPins) return "";
+    const child = project.circuits.find(item => item.id === component.master);
+    const childReferences = child ? project.circuits.reduce((sum, item) => sum + item.instances.filter(instance => instance.master === child.id).length, 0) : 0;
+    if (component.group) {
+      const memberRows = component.memberIds.slice(0, 50).map(id => {
+        const item = circuit.instances.find(instance => instance.id === id);
+        return '<li><b>' + escapeHtml(item?.ref || id) + '</b><small>' + escapeHtml(item?.source?.path || "") + ':' + escapeHtml(item?.source?.line || "") + '</small><button class="member-action" data-member-expand="' + escapeHtml(id) + '">单独显示</button><button class="member-action danger" data-member-delete="' + escapeHtml(id) + '">删除</button></li>';
+      }).join("");
+      return '<div class="selected-component"><span class="selected-symbol">' + icon("blocks") + '</span><div><h3>' + escapeHtml(component.master) + '</h3><p>折叠组 · ' + component.memberCount + ' 个实例</p></div></div><div class="inspector-section"><div class="section-heading">重复实例成员<span class="count-badge">' + component.memberCount + '</span></div><input class="text-input" id="member-search" data-page="0" data-last-query="" placeholder="按位号筛选…"><ul class="member-list" data-group-component="' + escapeHtml(component.id) + '">' + memberRows + '</ul><div class="member-pagination"><button class="button soft" data-member-page="-1" disabled>上一页</button><span>1 / ' + Math.ceil(component.memberCount / 50) + '</span><button class="button soft" data-member-page="1"' + (component.memberCount <= 50 ? ' disabled' : '') + '>下一页</button></div><p class="muted-copy">可搜索全部成员；每页显示 50 项。</p><p class="muted-copy">分组依据为模型、参数文本和有序端子连接完全一致。组本身只保存布局。</p></div>';
+    }
+    const instance = circuit.instances.find(item => item.id === component.sourceInstanceId);
+    if (!instance) return "";
+    const mapping = project.mappings[instance.master] || instance.mapping;
+    const mappingOptions = spectreSymbolOptions(mapping.symbol);
+    const pinRows = instance.nodes.map((net, index) => '<tr><td><input class="text-input mono compact-input pin-name-input" data-import-pin-name="' + index + '" value="' + escapeHtml(component.dynamicPins[index]) + '" title="引脚映射名称"></td><td><input class="text-input mono compact-input" data-import-net-pin="' + index + '" value="' + escapeHtml(net) + '" title="网络名称"></td></tr>').join("");
+    const params = Object.entries(instance.parameters || {}).map(([key, value]) => '<tr><td class="pin-letter">' + escapeHtml(key) + '</td><td class="mono parameter-value">' + escapeHtml(value) + '</td></tr>').join("");
+    const isExpanded = (project.display.expandedMembers[circuit.id] || []).includes(instance.id);
+    return '<div class="selected-component"><span class="selected-symbol">' + symbolPreview(component) + '</span><div><h3>' + escapeHtml(instance.ref) + '</h3><p>' + escapeHtml(instance.master) + '</p></div><span class="selected-tag">' + (mapping.confidence === "inferred" ? "推测映射" : mapping.confidence === "exact" ? "已识别" : mapping.confidence === "manual" ? "手动映射" : "待映射") + '</span></div><div class="inspector-section"><div class="section-heading">Spectre 实例</div><label class="field-label">器件符号</label><select class="text-input" data-import-mapping="symbol">' + mappingOptions + '</select><label class="field-label">原始参数</label><textarea class="text-input mono import-raw" readonly>' + escapeHtml(instance.parametersRaw || "（无）") + '</textarea>' + (child ? '<button class="button full enter-subckt" data-open-circuit="' + escapeHtml(child.id) + '">' + icon("layers") + '进入子电路定义 · ' + childReferences + ' 个引用</button>' : '') + (isExpanded ? '<button class="button full" data-member-collapse="' + escapeHtml(instance.id) + '">重新折叠该成员</button>' : '') + '<p class="source-location">来源：' + escapeHtml(instance.source?.path || "") + ':' + escapeHtml(instance.source?.line || "") + '</p></div>' + (params ? '<div class="inspector-section"><div class="section-heading">参数表达式</div><table class="pin-table"><tbody>' + params + '</tbody></table></div>' : '') + '<div class="inspector-section"><div class="section-heading">引脚映射与网络<span class="count-badge">' + instance.nodes.length + '</span></div><table class="pin-table import-pin-table"><thead><tr><th>引脚名</th><th>网络</th></tr></thead><tbody>' + pinRows + '</tbody></table><p class="muted-copy">引脚名映射按模型保存；修改网络名会更新该端子的连接。在画布连接两个端子会合并它们所在的网络。</p></div>';
   }
   function renderInspector() {
     const content = $("#properties-content");
     const component = selected?.kind === "component" ? state.components.find(c => c.id === selected.id) : null;
+    if (component?.boundaryPort) {
+      const connected = isConnected(component.id, "P");
+      content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + symbolPreview(component.type) + '</span><div><h3>' + escapeHtml(component.value) + '</h3><p>子电路边界端口</p></div><span class="selected-tag">PIN ' + (component.boundaryPortIndex + 1) + '</span></div><div class="inspector-section"><div class="section-heading">接口信息</div><label class="field-label">声明顺序</label><div class="text-input mono">' + (component.boundaryPortIndex + 1) + '</div><label class="field-label">内部网络</label><div class="text-input mono">' + escapeHtml(component.value) + '</div><label class="field-label">连接状态</label><div><span class="' + (connected ? 'connected-badge' : 'unconnected') + '">' + (connected ? '已连接' : '未使用') + '</span></div><p class="muted-copy">端口由 subckt 声明生成。可以移动位置，或点击端点连接到内部实例；端口名称和顺序随工程保存。</p></div>';
+      return;
+    }
+    if (component?.dynamicPins) { content.innerHTML = importedInspector(component); return; }
     if (selected?.kind === "multi") {
       const comps = state.components.filter(c => selected.components.includes(c.id));
-      const rows = comps.slice(0, 60).map(c => '<li><span class="multi-dot"></span><b>' + escapeHtml(c.ref) + '</b><small>' + defs[c.type].name + '</small></li>').join("");
+      const rows = comps.slice(0, 60).map(c => '<li><span class="multi-dot"></span><b>' + escapeHtml(c.ref) + '</b><small>' + definitionFor(c).name + '</small></li>').join("");
       content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + icon("blocks") + '</span><div><h3>已选择 ' + comps.length + ' 个元件</h3><p>' + (selected.wires.length ? selected.wires.length + " 条导线" : "多选模式") + '</p></div></div><div class="inspector-section"><div class="section-heading">批量操作</div><div class="multi-actions"><button class="button soft" data-action="rotate">' + icon("rotate") + '旋转</button><button class="button soft" data-action="duplicate">' + icon("copy") + '复制</button><button class="button soft" data-action="delete">' + icon("trash") + '删除</button><button class="button soft" data-action="clear">清除选择</button></div><ul class="multi-list">' + rows + '</ul><p class="muted-copy">拖动任一元件可整体移动，导线跟随引脚自动重排。按 <kbd>Delete</kbd> 删除全部。</p></div>';
       return;
     }
@@ -277,23 +372,35 @@
       } else content.innerHTML = '<div class="inspector-empty">' + icon("cursor") + '<h3>选择一个元件</h3><p>点击画布上的元件，<br>查看和编辑参数。</p></div>';
       return;
     }
-    const d = defs[component.type];
+    const d = definitionFor(component);
     const fields = d.fields.map(([key, label, unit]) => '<label class="field-label">' + label + '</label><div class="unit-field"><input data-prop="' + key + '" class="text-input mono" value="' + escapeHtml(component[key]) + '" maxlength="80"><span>' + unit + '</span></div>').join("");
     const pins = d.pins.map(pin => '<tr><td class="pin-letter">' + escapeHtml(pin.id) + '</td><td>' + pin.name + '</td><td><span class="' + (isConnected(component.id, pin.id) ? "connected-badge" : "unconnected") + '">' + (isConnected(component.id, pin.id) ? "已连接" : "未连接") + '</span></td></tr>').join("");
     content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + symbolPreview(component.type) + '</span><div><h3>' + escapeHtml(component.ref) + ' / ' + d.name + '</h3><p>' + d.title + '</p></div><span class="selected-tag">实例</span></div><div class="inspector-section"><div class="section-heading">基本信息</div><label class="field-label">位号</label><input class="text-input mono" data-prop="ref" value="' + escapeHtml(component.ref) + '" maxlength="40"><label class="field-label">位置</label><div class="field-row"><div class="field-box"><span>X</span><input type="number" class="text-input mono" data-prop="x" value="' + component.x + '"></div><div class="field-box"><span>Y</span><input type="number" class="text-input mono" data-prop="y" value="' + component.y + '"></div></div><div class="rotation-row"><div class="unit-field"><input class="text-input mono" readonly value="' + component.rotation + '"><span>deg</span></div><button class="icon-button" data-action="rotate" title="旋转">' + icon("rotate") + '</button><button class="icon-button" data-action="duplicate" title="复制">' + icon("copy") + '</button></div></div>' + (fields ? '<div class="inspector-section"><div class="section-heading">电气参数</div>' + fields + '</div>' : "") + '<div class="inspector-section"><div class="section-heading">引脚连接<span class="count-badge">' + d.pins.length + '</span></div><table class="pin-table"><thead><tr><th>引脚</th><th>名称</th><th>状态</th></tr></thead><tbody>' + pins + '</tbody></table><div class="connection-note">' + icon("info") + '<span>点击画布中的引脚，即可开始连接。</span></div></div>';
   }
   function render() {
     renderCanvas(); renderInspector();
-    $("#project-name").textContent = state.name; $("#canvas-title").textContent = state.name; $("#tab-name").textContent = state.name; $("#design-name").value = state.name; $("#project-card-name").textContent = state.name;
+    const project = activeProject();
+    const title = project ? project.name : state.name;
+    $("#project-name").textContent = title; $("#canvas-title").textContent = state.name; if ($("#tab-name")) $("#tab-name").textContent = title; $("#design-name").value = title; $("#project-card-name").textContent = title;
+    $("#canvas-subtitle").textContent = project ? ((activeCircuitId() === project.top ? "顶层电路" : "子电路定义") + " · " + state.components.length + " 个可见对象") : "可编辑 IC 原理图";
+    $("#project-card-meta").textContent = project ? (project.stats.subcircuits + " 个子电路 · " + project.stats.totalInstances + " 个实例") : "当前工程 · 自动保存在此浏览器";
     $("#undo-btn").disabled = !undoStack.length; $("#redo-btn").disabled = !redoStack.length; $("#rotate-btn").disabled = !selectedComponentIds().length; $("#delete-btn").disabled = !selected;
-    $("#layer-list").innerHTML = state.components.map(c => '<button class="layer-row' + (isSelectedComponent(c.id) ? " active" : "") + '" data-layer="' + escapeHtml(c.id) + '">' + symbolPreview(c.type) + '<span>' + escapeHtml(c.ref) + '</span><small>' + defs[c.type].name + '</small></button>').join("");
+    if (project) {
+      $("#layer-list").innerHTML = '<div class="hierarchy-tree">' + S.hierarchy(project).map(row => '<button class="hierarchy-row' + (row.id === activeCircuitId() ? ' active' : '') + '" data-circuit="' + escapeHtml(row.id) + '" style="--depth:' + row.depth + '"><span data-icon="' + (row.id === project.top ? 'circuit' : 'file-circuit') + '"></span><span>' + escapeHtml(row.name) + '</span><small>' + row.count + '</small></button>').join("") + '</div><div class="layer-divider">当前层可见对象</div>' + state.components.map(c => '<button class="layer-row' + (isSelectedComponent(c.id) ? " active" : "") + '" data-layer="' + escapeHtml(c.id) + '">' + symbolPreview(c) + '<span>' + escapeHtml(c.boundaryPort ? c.value : c.ref) + '</span><small>' + escapeHtml(c.boundaryPort ? "子电路端口" : c.group ? c.memberCount + "×" : c.master) + '</small></button>').join("");
+      const chain = $("#hierarchy-breadcrumbs"); chain.hidden = false; chain.innerHTML = '<button data-open-circuit="' + escapeHtml(project.top) + '">' + escapeHtml(project.name) + '</button><span>›</span><b>' + escapeHtml(activeCircuitId()) + '</b>';
+      $("#library-title").textContent = $("#layers-content").hidden ? $("#library-title").textContent : "电路层级";
+    } else {
+      $("#layer-list").innerHTML = state.components.map(c => '<button class="layer-row' + (isSelectedComponent(c.id) ? " active" : "") + '" data-layer="' + escapeHtml(c.id) + '">' + symbolPreview(c) + '<span>' + escapeHtml(c.ref) + '</span><small>' + definitionFor(c).name + '</small></button>').join("");
+      $("#hierarchy-breadcrumbs").hidden = true;
+    }
+    hydrateIcons($("#layer-list"));
   }
   function pointFromEvent(event) {
     const point = svg.createSVGPoint(); point.x = event.clientX; point.y = event.clientY;
     return point.matrixTransform(svg.getScreenCTM().inverse());
   }
   function closestSegmentAxis(wire, point) {
-    const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+    const points = C.wireRoute(state, wire);
     let best = { distance: Infinity, axis: "x" };
     for (let index = 0; index < points.length - 1; index++) {
       const a = points[index];
@@ -311,16 +418,21 @@
   }
   function bounds() {
     if (!state.components.length) return { x: 50, y: 70, w: 850, h: 560 };
-    const xs = state.components.map(c => c.x), ys = state.components.map(c => c.y);
-    return { x: Math.min(...xs) - 100, y: Math.min(...ys) - 100, w: Math.max(...xs) - Math.min(...xs) + 200, h: Math.max(...ys) - Math.min(...ys) + 200 };
+    const boxes = state.components.map(componentBox), minX = Math.min(...boxes.map(box => box.x)), minY = Math.min(...boxes.map(box => box.y)), maxX = Math.max(...boxes.map(box => box.x + box.w)), maxY = Math.max(...boxes.map(box => box.y + box.h));
+    return { x: minX - 100, y: minY - 100, w: maxX - minX + 200, h: maxY - minY + 200 };
   }
-  function fitView() { const b = bounds(); svg.setAttribute("viewBox", [b.x, b.y, Math.max(700, b.w), Math.max(520, b.h)].join(" ")); $("#zoom-value").textContent = "100%"; }
+  function fitView() { const b = bounds(); svg.setAttribute("viewBox", [b.x, b.y, Math.max(700, b.w), Math.max(520, b.h)].join(" ")); $("#zoom-value").textContent = "100%"; renderCanvas(); }
   function setTool(tool) { activeTool = tool; wireStart = null; $("#preview-layer").innerHTML = ""; svg.dataset.tool = tool; $$("[data-tool]").forEach(button => button.classList.toggle("active", button.dataset.tool === tool)); renderCanvas(); $("#status-text").textContent = tool === "wire" ? "连线工具：点击两个引脚" : tool === "pan" ? "拖动画布" : "就绪"; }
-  function addComponent(type, x, y) { const before = snapshot(); const c = C.component(type, snapEnabled ? Math.round(x / gridSize) * gridSize : x, snapEnabled ? Math.round(y / gridSize) * gridSize : y, refFor(type)); state.components.push(c); selected = { kind: "component", id: c.id }; commit(before); render(); toast("已添加 " + defs[type].name); }
-  function rotateSelected() { const ids = selectedComponentIds(); if (!ids.length) return; const before = snapshot(); state.components.filter(c => ids.includes(c.id)).forEach(c => { c.rotation = (c.rotation + 90) % 360; }); commit(before); render(); }
+  function addComponent(type, x, y) { if (activeProject()) return toast("分层 Spectre 工程请在源网表中新增实例"); const before = snapshot(); const c = C.component(type, snapEnabled ? Math.round(x / gridSize) * gridSize : x, snapEnabled ? Math.round(y / gridSize) * gridSize : y, refFor(type)); state.components.push(c); selected = { kind: "component", id: c.id }; commit(before); render(); toast("已添加 " + defs[type].name); }
+  function invalidateOrganizedRoutes(ids) {
+    const moved = new Set(ids);
+    state.wires.forEach(wire => { if (moved.has(wire.from.component) || moved.has(wire.to.component)) delete wire.waypoints; });
+  }
+  function rotateSelected() { const ids = selectedComponentIds(); if (!ids.length) return; const before = snapshot(); state.components.filter(c => ids.includes(c.id)).forEach(c => { c.rotation = (c.rotation + 90) % 360; }); invalidateOrganizedRoutes(ids); commit(before); render(); }
   function duplicateSelected() {
     const ids = selectedComponentIds();
     if (!ids.length) return;
+    if (activeProject()) return toast("Spectre 实例请在源网表中复制；当前可编辑布局、映射和连接");
     const before = snapshot();
     const copies = [];
     const idMap = new Map();
@@ -348,6 +460,16 @@
     if (!selected) return;
     const componentIds = selectedComponentIds(), wireIds = selectedWireIds();
     if (!componentIds.length && !wireIds.length) return;
+    if (activeProject()) {
+      if (wireIds.length) return toast("导入网络由端子名称生成，请在实例属性中修改网络");
+      const components = state.components.filter(component => componentIds.includes(component.id));
+      if (components.some(component => component.boundaryPort)) return toast("子电路端口由 subckt 声明生成，不能在画布中删除");
+      if (components.some(component => component.group)) return toast("折叠组请在右侧成员列表中删除指定实例");
+      const project = activeProject(), circuitId = activeCircuitId();
+      components.forEach(component => { if (component.sourceInstanceId) S.deleteInstance(project, circuitId, component.sourceInstanceId); });
+      activePage().state = C.validate(S.view(project, circuitId)); state = activePage().state; selected = null; render(); persist();
+      toast("已从当前子电路删除 " + components.length + " 个实例"); return;
+    }
     const before = snapshot();
     state.components = state.components.filter(c => !componentIds.includes(c.id));
     state.wires = state.wires.filter(w => !wireIds.includes(w.id) && !componentIds.includes(w.from.component) && !componentIds.includes(w.to.component));
@@ -360,17 +482,29 @@
     const end = { component: componentId, pin: pinId };
     if (!wireStart) { wireStart = end; activeTool = "wire"; $("#status-text").textContent = "选择目标引脚"; renderCanvas(); return; }
     if (wireStart.component === end.component && wireStart.pin === end.pin) { wireStart = null; renderCanvas(); return; }
+    if (activeProject()) {
+      const firstComponent = state.components.find(item => item.id === wireStart.component), secondComponent = state.components.find(item => item.id === end.component);
+      if (!firstComponent || !secondComponent || firstComponent.group || secondComponent.group) { wireStart = null; renderCanvas(); return toast("折叠组不能直接修改连接，请先单独显示成员"); }
+      const projectEndpoint = (component, pin) => component.boundaryPort
+        ? { port: component.boundaryPortIndex }
+        : component.sourceInstanceId ? { instance: component.sourceInstanceId, pin: Number(pin) } : null;
+      const firstEndpoint = projectEndpoint(firstComponent, wireStart.pin), secondEndpoint = projectEndpoint(secondComponent, end.pin);
+      if (!firstEndpoint || !secondEndpoint) { wireStart = null; renderCanvas(); return toast("该端点不能修改导入网络"); }
+      S.mergePins(activeProject(), activeCircuitId(), firstEndpoint, secondEndpoint);
+      activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; wireStart = null; selected = null; render(); persist(); toast("已合并两个端子所在网络"); return;
+    }
     const duplicate = state.wires.some(w => [w.from, w.to].some(a => a.component === wireStart.component && a.pin === wireStart.pin) && [w.from, w.to].some(a => a.component === end.component && a.pin === end.pin));
     if (duplicate) { toast("这两个引脚已经连接"); wireStart = null; renderCanvas(); return; }
     const before = snapshot(); state.wires.push({ id: C.id("w"), from: wireStart, to: end }); ensureNetNames(); wireStart = null; commit(before); setTool("select"); render();
   }
   function download(name, content, type) { const url = URL.createObjectURL(new Blob([content], { type })); const a = document.createElement("a"); a.href = url; a.download = name; a.style.display = "none"; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 500); }
-  function exportJson() { download((state.name || "schematic").replace(/\s+/g, "-") + ".snets.json", JSON.stringify(state, null, 2), "application/json"); toast("工程 JSON 已导出"); }
+  function exportJson() { saveCurrentPage(); const value = activeProject() || state; download((value.name || "schematic").replace(/\s+/g, "-") + ".snets.json", JSON.stringify(value, null, 2), "application/json"); toast("工程 JSON 已导出"); }
   function exportSvg() {
     const b = bounds();
     // 导出前临时清除交互态，得到干净的静态图
     const savedSelection = selected, savedHover = hoverWire, savedWireStart = wireStart;
-    selected = null; hoverWire = null; wireStart = null; renderCanvas();
+    const savedViewBox = svg.getAttribute("viewBox");
+    selected = null; hoverWire = null; wireStart = null; svg.setAttribute("viewBox", [b.x, b.y, b.w, b.h].join(" ")); renderCanvas();
     const clone = svg.cloneNode(true);
     // 将每个元素的计算样式内联（解析 var() 与 styles.css 中的规则），脱离外部样式表
     const styleProps = ["fill", "fill-opacity", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-miterlimit", "opacity", "font-family", "font-size", "font-weight", "letter-spacing", "text-anchor", "dominant-baseline", "paint-order", "visibility"];
@@ -382,7 +516,7 @@
     };
     inlineStyles(svg, clone);
     // 遍历完成后恢复画布交互态
-    selected = savedSelection; hoverWire = savedHover; wireStart = savedWireStart; renderCanvas();
+    selected = savedSelection; hoverWire = savedHover; wireStart = savedWireStart; if (savedViewBox) svg.setAttribute("viewBox", savedViewBox); renderCanvas();
     // 移除交互层与辅助元素
     clone.querySelector("#grid-bg")?.remove();
     clone.querySelector("#preview-layer")?.remove();
@@ -405,6 +539,12 @@
   }
   function openDialog(title, html) { $("#dialog-title").textContent = title; $("#dialog-content").innerHTML = html; $("#app-dialog").showModal(); }
   function runCheck() {
+    if (activeProject()) {
+      const project = activeProject(), errors = project.issues.filter(issue => issue.severity === "error"), warnings = project.issues.filter(issue => issue.severity !== "error");
+      const rows = project.issues.slice(0, 200).map(issue => '<div class="issue-row static"><b>' + escapeHtml(issue.code) + '</b><br>' + escapeHtml(issue.message) + (issue.source ? '<small>' + escapeHtml(issue.source.path) + ':' + issue.source.line + '</small>' : '') + '</div>').join("");
+      openDialog("Spectre 导入报告", '<div class="check-summary"><div><strong>' + (errors.length ? errors.length + " 个错误" : "结构解析完成") + '</strong><small>' + project.stats.subcircuits + ' 个子电路 · ' + project.stats.totalInstances + ' 个实例 · ' + warnings.length + ' 个提醒</small></div></div>' + (rows || '<p class="muted-copy">没有发现未解析引用。</p>') + '<p class="muted-copy">报告验证网表结构和依赖，不执行 Spectre 仿真。</p>');
+      return;
+    }
     const issues = C.check(state);
     const summary = issues.length ? '<div class="check-summary" style="background:#fff8ef">' + icon("info") + '<div><strong>发现 ' + issues.length + ' 个连接问题</strong><small>点击问题可定位元件</small></div></div>' : '<div class="check-summary">' + icon("check-circle") + '<div><strong>连接检查通过</strong><small>未发现悬空引脚</small></div></div>';
     const rows = issues.map(issue => '<button class="issue-row" data-issue-component="' + escapeHtml(issue.component || "") + '">' + escapeHtml(issue.message) + '</button>').join("");
@@ -419,7 +559,7 @@
     return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
   }
   function wireLabelPoint(wire) {
-    const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+    const points = C.wireRoute(state, wire);
     let best = { length: -1, x: points[0].x, y: points[0].y };
     for (let index = 1; index < points.length; index++) {
       const a = points[index - 1], b = points[index];
@@ -432,7 +572,8 @@
     let match = null;
     let best = screenPixelsToSvg(9);
     for (const wire of state.wires) {
-      const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+      if (renderedWireIds && !renderedWireIds.has(wire.id)) continue;
+      const points = C.wireRoute(state, wire);
       for (let index = 1; index < points.length; index++) {
         const distance = distanceToSegment(point, points[index - 1], points[index]);
         if (distance <= best) { best = distance; match = wire; }
@@ -441,7 +582,7 @@
     return match;
   }
   function normalizeRect(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; }
-  function componentBox(c) { return { x: c.x - 72, y: c.y - 70, w: 144, h: 140 }; }
+  function componentBox(c) { const d = definitionFor(c), w = d.width || 144, h = d.height || 140; return { x: c.x - w / 2, y: c.y - h / 2, w, h }; }
   function rectsIntersect(a, b) { return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y; }
   function pointInRect(point, rect) { return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h; }
   function segmentIntersectsRect(a, b, rect) {
@@ -461,7 +602,7 @@
   function hitsMarquee(rect) {
     const components = state.components.filter(c => rectsIntersect(componentBox(c), rect)).map(c => c.id);
     const wires = state.wires.filter(wire => {
-      const points = C.route(C.endpoint(state, wire.from), C.endpoint(state, wire.to), wire.manual);
+      const points = C.wireRoute(state, wire);
       return points.some((point, index) => index > 0 && segmentIntersectsRect(points[index - 1], point, rect));
     }).map(wire => wire.id);
     return { components, wires };
@@ -471,7 +612,8 @@
     const radius = screenPixelsToSvg(13);
     for (let index = state.components.length - 1; index >= 0; index--) {
       const component = state.components[index];
-      for (const pin of defs[component.type].pins) {
+      if (renderedComponentIds && !renderedComponentIds.has(component.id)) continue;
+      for (const pin of definitionFor(component).pins) {
         const position = C.pinPoint(component, pin.id);
         if (Math.hypot(point.x - position.x, point.y - position.y) <= radius) return { component: component.id, pin: pin.id };
       }
@@ -574,15 +716,17 @@
     }
     if (drag.kind === "components") {
       let dx = p.x - drag.start.x, dy = p.y - drag.start.y;
-      if (snapEnabled) {
+      if (snapEnabled || activeProject()) {
+        const snapStep = activeProject() ? 20 : gridSize;
         const origin = drag.offsets[drag.primary];
-        dx = Math.round((origin.x + dx) / gridSize) * gridSize - origin.x;
-        dy = Math.round((origin.y + dy) / gridSize) * gridSize - origin.y;
+        dx = Math.round((origin.x + dx) / snapStep) * snapStep - origin.x;
+        dy = Math.round((origin.y + dy) / snapStep) * snapStep - origin.y;
       }
       const changed = state.components.some(c => drag.ids.includes(c.id) && (c.x !== drag.offsets[c.id].x + dx || c.y !== drag.offsets[c.id].y + dy))
         || state.wires.some(wire => drag.wireOffsets[wire.id] && wire.manual?.value !== drag.wireOffsets[wire.id].value + (drag.wireOffsets[wire.id].axis === "x" ? dx : dy));
       if (changed) {
         drag.moved = true;
+        invalidateOrganizedRoutes(drag.ids);
         state.components.filter(c => drag.ids.includes(c.id)).forEach(c => { const origin = drag.offsets[c.id]; c.x = origin.x + dx; c.y = origin.y + dy; });
         state.wires.forEach(wire => {
           const origin = drag.wireOffsets[wire.id];
@@ -592,7 +736,7 @@
       }
       return;
     }
-    if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled) { x = Math.round(x / gridSize) * gridSize; y = Math.round(y / gridSize) * gridSize; } if (c.x !== x || c.y !== y) { c.x = x; c.y = y; drag.moved = true; renderCanvas(); } }
+    if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled || activeProject()) { const snapStep = activeProject() ? 20 : gridSize; x = Math.round(x / snapStep) * snapStep; y = Math.round(y / snapStep) * snapStep; } if (c.x !== x || c.y !== y) { invalidateOrganizedRoutes([c.id]); c.x = x; c.y = y; drag.moved = true; renderCanvas(); } }
     if (drag.kind === "wire-segment") {
       const distance = Math.hypot(p.x - drag.start.x, p.y - drag.start.y);
       if (distance > 2 || drag.moved) {
@@ -604,7 +748,7 @@
         renderCanvas();
       }
     }
-    if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); }
+    if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); renderCanvas(); }
   });
   svg.addEventListener("pointerleave", () => {
     const hadHover = hoverPin || hoverWire;
@@ -626,7 +770,7 @@
     if (["component", "components", "wire-segment"].includes(drag?.kind) && drag.moved) { commit(drag.before); render(); }
     drag = null; try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
   });
-  svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; }, { passive: false });
+  svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; renderCanvas(); }, { passive: false });
 
   $("#component-grid").addEventListener("click", event => { const card = event.target.closest("[data-component-type]"); if (card) { const box = bounds(); addComponent(card.dataset.componentType, box.x + box.w / 2, box.y + box.h / 2); } });
   $("#component-grid").addEventListener("dragstart", event => { const card = event.target.closest("[data-component-type]"); if (card) event.dataTransfer.setData("text/snets-component", card.dataset.componentType); });
@@ -639,6 +783,15 @@
   $("#zoom-in").onclick = () => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, clientX: svg.getBoundingClientRect().left + svg.clientWidth / 2, clientY: svg.getBoundingClientRect().top + svg.clientHeight / 2, cancelable: true }));
   $("#zoom-out").onclick = () => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, clientX: svg.getBoundingClientRect().left + svg.clientWidth / 2, clientY: svg.getBoundingClientRect().top + svg.clientHeight / 2, cancelable: true }));
   $("#snap-btn").onclick = () => { snapEnabled = !snapEnabled; $("#snap-btn").classList.toggle("active", snapEnabled); $("#snap-btn").setAttribute("aria-pressed", snapEnabled); };
+  $("#organize-btn").onclick = () => {
+    if (!state.components.length) return toast("画布中没有需要整理的对象");
+    const before = snapshot();
+    toast("正在整理器件与连线…");
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      state = C.organize(state); activePage().state = state; selected = null;
+      commit(before); render(); requestAnimationFrame(fitView); toast("已整理全部器件与连线");
+    }));
+  };
   $("#align-grid-btn").onclick = () => {
     if (!state.components.length && !state.wires.some(wire => wire.manual)) return toast("画布中没有需要对齐的对象");
     const before = snapshot();
@@ -648,6 +801,30 @@
   };
   $("#grid-btn").onclick = () => { showGrid = !showGrid; $("#grid-btn").classList.toggle("active", showGrid); renderCanvas(); };
   $("#properties-content").addEventListener("change", event => {
+    const pinNameInput = event.target.closest("[data-import-pin-name]");
+    if (pinNameInput && activeProject() && selected?.kind === "component") {
+      const component = state.components.find(item => item.id === selected.id), next = pinNameInput.value.trim();
+      if (!next || !component?.sourceInstanceId) return renderInspector();
+      const current = activeProject().mappings[component.master] || { symbol: component.symbol, confidence: "manual" };
+      const names = Array.isArray(current.pinNames) && current.pinNames.length === component.dynamicPins.length ? current.pinNames.slice() : component.dynamicPins.slice();
+      names[Number(pinNameInput.dataset.importPinName)] = next;
+      activeProject().mappings[component.master] = { ...current, pinNames: names, confidence: "manual" };
+      activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = { kind: "component", id: component.id }; render(); persist(); toast("引脚映射已保存到模型 " + component.master); return;
+    }
+    const netInput = event.target.closest("[data-import-net-pin]");
+    if (netInput && activeProject() && selected?.kind === "component") {
+      const component = state.components.find(item => item.id === selected.id), next = netInput.value.trim();
+      if (!next || !component?.sourceInstanceId) return renderInspector();
+      S.renameNet(activeProject(), activeCircuitId(), component.sourceInstanceId, Number(netInput.dataset.importNetPin), next);
+      activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = { kind: "component", id: component.id }; render(); persist(); toast("端子网络已更新"); return;
+    }
+    const mappingInput = event.target.closest("[data-import-mapping]");
+    if (mappingInput && activeProject() && selected?.kind === "component") {
+      const component = state.components.find(item => item.id === selected.id);
+      if (!component) return;
+      activeProject().mappings[component.master] = { ...(activeProject().mappings[component.master] || {}), symbol: mappingInput.value, confidence: "manual" };
+      activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = { kind: "component", id: component.id }; render(); persist(); toast("模型映射已保存"); return;
+    }
     const wireInput = event.target.closest("[data-wire-prop]");
     if (wireInput && selected?.kind === "wire") {
       const wire = state.wires.find(item => item.id === selected.id);
@@ -664,21 +841,95 @@
     if (!value && input.dataset.prop === "ref") { renderInspector(); return; }
     c[input.dataset.prop] = value; commit(before); render();
   });
-  $("#properties-content").addEventListener("click", event => { const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "duplicate") duplicateSelected(); if (action === "delete") deleteSelected(); if (action === "clear") { selected = null; render(); } });
-  $("#layer-list").addEventListener("click", event => { const row = event.target.closest("[data-layer]"); if (row) { selected = { kind: "component", id: row.dataset.layer }; render(); } });
+  $("#properties-content").addEventListener("click", event => {
+    const open = event.target.closest("[data-open-circuit]"); if (open) return openCircuit(open.dataset.openCircuit, open.textContent.trim());
+    const expand = event.target.closest("[data-member-expand]");
+    if (expand && activeProject()) { S.setMemberExpanded(activeProject(), activeCircuitId(), expand.dataset.memberExpand, true); activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = { kind: "component", id: expand.dataset.memberExpand }; render(); persist(); toast("该成员已从折叠组中单独显示"); return; }
+    const remove = event.target.closest("[data-member-delete]");
+    if (remove && activeProject()) { S.deleteInstance(activeProject(), activeCircuitId(), remove.dataset.memberDelete); activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = null; render(); persist(); toast("成员实例已删除"); return; }
+    const collapse = event.target.closest("[data-member-collapse]");
+    if (collapse && activeProject()) { S.setMemberExpanded(activeProject(), activeCircuitId(), collapse.dataset.memberCollapse, false); activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = null; render(); persist(); toast("成员已重新折叠"); return; }
+    const pageButton = event.target.closest("[data-member-page]");
+    if (pageButton) { const input = $("#member-search"); if (!input) return; input.dataset.page = String(Math.max(0, Number(input.dataset.page || 0) + Number(pageButton.dataset.memberPage))); input.dispatchEvent(new Event("input", { bubbles: true })); return; }
+    const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "duplicate") duplicateSelected(); if (action === "delete") deleteSelected(); if (action === "clear") { selected = null; render(); }
+  });
+  $("#properties-content").addEventListener("input", event => {
+    if (event.target.id !== "member-search" || !activeProject() || selected?.kind !== "component") return;
+    const component = state.components.find(item => item.id === selected.id); if (!component?.group) return;
+    const circuit = S.getCircuit(activeProject(), activeCircuitId()), query = event.target.value.trim().toLowerCase();
+    const list = $(".member-list"); if (!list) return;
+    if (event.target.dataset.lastQuery !== query) { event.target.dataset.page = "0"; event.target.dataset.lastQuery = query; }
+    const matches = component.memberIds.map(id => circuit.instances.find(item => item.id === id)).filter(Boolean).filter(item => !query || item.ref.toLowerCase().includes(query));
+    const pagesCount = Math.max(1, Math.ceil(matches.length / 50)), page = Math.min(Number(event.target.dataset.page || 0), pagesCount - 1); event.target.dataset.page = String(page);
+    list.innerHTML = matches.slice(page * 50, page * 50 + 50).map(item => '<li><b>' + escapeHtml(item.ref) + '</b><small>' + escapeHtml(item.source?.path || "") + ':' + escapeHtml(item.source?.line || "") + '</small><button class="member-action" data-member-expand="' + escapeHtml(item.id) + '">单独显示</button><button class="member-action danger" data-member-delete="' + escapeHtml(item.id) + '">删除</button></li>').join("") || '<li>没有匹配的成员</li>';
+    const pagination = $(".member-pagination"); if (pagination) { pagination.querySelector("span").textContent = (page + 1) + " / " + pagesCount; const buttons = pagination.querySelectorAll("button"); buttons[0].disabled = page === 0; buttons[1].disabled = page >= pagesCount - 1; }
+  });
+  $("#layer-list").addEventListener("click", event => {
+    const circuit = event.target.closest("[data-circuit]"); if (circuit) return openCircuit(circuit.dataset.circuit);
+    const row = event.target.closest("[data-layer]"); if (row) { selected = { kind: "component", id: row.dataset.layer }; render(); }
+  });
   $$(".rail-item[data-panel]").forEach(button => button.addEventListener("click", () => { $$(".rail-item[data-panel]").forEach(b => b.classList.toggle("active", b === button)); ["library", "layers", "files"].forEach(name => $("#" + name + "-content").hidden = name !== button.dataset.panel); $("#library-title").textContent = { library: "元件库", layers: "电路图层", files: "工程文件" }[button.dataset.panel]; }));
   $$("[data-inspector]").forEach(button => button.addEventListener("click", () => { $$("[data-inspector]").forEach(b => b.classList.toggle("active", b === button)); $("#properties-content").hidden = button.dataset.inspector !== "properties"; $("#design-content").hidden = button.dataset.inspector !== "design"; }));
-  $("#design-name").addEventListener("change", event => { const value = event.target.value.trim(); if (!value) return render(); const before = snapshot(); state.name = value.slice(0, 80); commit(before); render(); });
+  $("#design-name").addEventListener("change", event => { const value = event.target.value.trim(); if (!value) return render(); if (activeProject()) { activeProject().name = value.slice(0, 160); state.name = activeCircuitId() === activeProject().top ? activeProject().name : state.name; persist(); render(); return; } const before = snapshot(); state.name = value.slice(0, 80); commit(before); render(); });
   $("#grid-select").addEventListener("change", event => { gridSize = Number(event.target.value); $("#grid-size").textContent = gridSize; renderCanvas(); });
   $("#theme-color").addEventListener("input", event => setDrawColor(event.target.value));
   $("#color-reset").addEventListener("click", () => setDrawColor(DEFAULT_DRAW_COLOR));
   $("#color-swatches").addEventListener("click", event => { const swatch = event.target.closest("[data-color]"); if (swatch) setDrawColor(swatch.dataset.color); });
-  $("#project-name").onclick = () => { const value = prompt("工程名称", state.name); if (value?.trim()) { const before = snapshot(); state.name = value.trim().slice(0, 80); commit(before); render(); } };
+  $("#project-name").onclick = () => { const value = prompt("工程名称", activeProject()?.name || state.name); if (value?.trim()) { if (activeProject()) { activeProject().name = value.trim().slice(0, 160); persist(); render(); } else { const before = snapshot(); state.name = value.trim().slice(0, 80); commit(before); render(); } } };
   $("#export-btn").onclick = event => { const menu = $("#export-menu"); menu.hidden = !menu.hidden; event.stopPropagation(); };
   $("#export-menu").addEventListener("click", event => { const type = event.target.closest("[data-export]")?.dataset.export; if (type === "json") exportJson(); if (type === "svg") exportSvg(); $("#export-menu").hidden = true; });
   document.addEventListener("click", event => { if (!event.target.closest("#export-menu") && !event.target.closest("#export-btn")) $("#export-menu").hidden = true; });
   $("#save-project-btn").onclick = exportJson; $("#import-btn").onclick = () => $("#file-input").click();
-  $("#file-input").addEventListener("change", async event => { const file = event.target.files[0]; if (!file) return; try { const imported = C.validate(JSON.parse(await file.text())); const before = snapshot(); state = imported; ensureNetNames(); selected = null; commit(before); fitView(); render(); toast("工程已打开"); } catch (error) { openDialog("无法打开工程", '<p class="muted-copy">' + escapeHtml(error.message) + '</p>'); } event.target.value = ""; });
+  $("#file-input").addEventListener("change", async event => {
+    const file = event.target.files[0]; if (!file) return;
+    try {
+      const value = JSON.parse(await file.text());
+      const page = value.version === 2 ? pageRecord(null, makePageId(), value, value.top) : pageRecord(C.validate(value));
+      pages.push(page); activePageId = ""; switchPage(page.id); toast(value.version === 2 ? "Spectre 工程已打开" : "工程已打开");
+    } catch (error) { openDialog("无法打开工程", '<p class="muted-copy">' + escapeHtml(error.message) + '</p>'); }
+    event.target.value = "";
+  });
+
+  let dependencyFiles = [], pendingSpectreProject = null, pendingSpectreSources = null, pendingSpectreMainPath = "", importWorker = null;
+  const updateDependencyNote = () => { $("#dependency-note").textContent = dependencyFiles.length ? ("已选择 " + dependencyFiles.length + " 个补充文件") : "尚未选择补充依赖"; };
+  $("#dependency-btn").onclick = () => openDialog("选择 Spectre 依赖", '<p class="muted-copy">可选择多个模型、网表或 Touchstone 文件，也可以选择整个依赖文件夹。文件只在本地浏览器中读取。</p><div class="dependency-choice"><button class="button" data-pick-dependency="files">选择多个文件</button><button class="button" data-pick-dependency="folder">选择文件夹</button></div>');
+  $("#dependency-input").addEventListener("change", event => { dependencyFiles = [...event.target.files]; updateDependencyNote(); $("#app-dialog").close(); event.target.value = ""; toast("已加入 " + dependencyFiles.length + " 个依赖文件"); });
+  $("#dependency-folder-input").addEventListener("change", event => { dependencyFiles = [...event.target.files]; updateDependencyNote(); $("#app-dialog").close(); event.target.value = ""; toast("已加入依赖文件夹，共 " + dependencyFiles.length + " 个文件"); });
+  $("#spectre-import-btn").onclick = () => $("#spectre-input").click();
+  $("#spectre-input").addEventListener("change", async event => {
+    const mainFile = event.target.files[0]; event.target.value = ""; if (!mainFile) return;
+    const files = [mainFile, ...dependencyFiles.filter(file => file !== mainFile)];
+    try {
+      const sources = await Promise.all(files.map(async file => ({ name: file.name, path: file.webkitRelativePath || file.name, size: file.size, type: file.type, text: await file.text() })));
+      pendingSpectreSources = sources; pendingSpectreMainPath = sources[0].path;
+      openDialog("正在导入 Spectre 网表", '<div class="import-progress"><div id="import-progress-bar"></div></div><p class="muted-copy" id="import-progress-text">正在读取文件…</p><div class="dialog-actions"><button class="button" data-cancel-import>取消</button></div>');
+      importWorker?.terminate(); importWorker = new Worker("./spectre-worker.js?v=4");
+      importWorker.onmessage = workerEvent => {
+        const data = workerEvent.data;
+        if (data.type === "progress") { const bar = $("#import-progress-bar"); if (bar) bar.style.width = data.value + "%"; const label = $("#import-progress-text"); if (label) label.textContent = data.message; return; }
+        if (data.type === "error") { importWorker.terminate(); importWorker = null; openDialog("无法导入 Spectre 网表", '<p class="muted-copy">' + escapeHtml(data.message) + '</p>'); return; }
+        if (data.type === "result") {
+          importWorker.terminate(); importWorker = null; pendingSpectreProject = data.project;
+          const errors = data.project.issues.filter(issue => issue.severity === "error");
+          const warnings = data.project.issues.filter(issue => issue.severity !== "error");
+          const biggest = data.project.circuits.slice().sort((a, b) => b.instances.length - a.instances.length)[0];
+          const groups = biggest.groups.slice(0, 5).map(group => '<li><b>' + group.members.length + '×</b> ' + escapeHtml(group.master) + ' <small>' + escapeHtml(group.nodes.join(" · ")) + '</small></li>').join("");
+          const unresolvedModelIssues = data.project.issues.filter(issue => issue.code === "UNRESOLVED_MODEL");
+          const otherIssues = data.project.issues.filter(issue => issue.code !== "UNRESOLVED_MODEL").slice(0, 8);
+          const previewIssues = [...unresolvedModelIssues, ...otherIssues];
+          const issueRows = previewIssues.map(issue => {
+            const resolution = Array.isArray(issue.candidates) ? '<select class="text-input resolution-select" data-resolution-key="' + escapeHtml((issue.source?.path || "") + "::" + issue.message.split("：").pop()) + '">' + issue.candidates.map(path => '<option value="' + escapeHtml(path) + '">' + escapeHtml(path) + '</option>').join("") + '</select>' : '';
+            const modelMapping = issue.code === "UNRESOLVED_MODEL" && issue.model ? '<label class="model-mapping-choice"><span>标准元件映射</span><select class="text-input model-mapping-select" data-model-name="' + escapeHtml(issue.model) + '">' + spectreSymbolOptions(suggestedSymbol(data.project, issue.model)) + '</select><small>应用到 ' + escapeHtml(issue.count || 0) + ' 个同模型实例</small></label>' : '';
+            return '<div class="preview-issue ' + issue.severity + '"><b>' + escapeHtml(issue.code) + '</b><span>' + escapeHtml(issue.message) + resolution + modelMapping + '</span></div>';
+          }).join("");
+          const hiddenIssueCount = Math.max(0, data.project.issues.length - previewIssues.length);
+          openDialog("Spectre 导入预览", '<div class="import-summary"><div><b>' + data.project.stats.subcircuits + '</b><span>子电路</span></div><div><b>' + data.project.stats.topInstances + '</b><span>顶层实例</span></div><div><b>' + data.project.stats.totalInstances + '</b><span>全部实例</span></div></div><p class="muted-copy">最大层：' + escapeHtml(biggest.name) + ' · ' + biggest.instances.length + ' 个实例。以下重复实例会折叠显示：</p><ul class="group-preview">' + (groups || '<li>没有完全相同的重复实例</li>') + '</ul>' + issueRows + (hiddenIssueCount ? '<p class="muted-copy">另有 ' + hiddenIssueCount + ' 项，可在导入后查看完整报告。</p>' : '') + '<div class="dialog-actions"><button class="button" data-dismiss-import>取消</button><button class="button primary" data-confirm-import' + (errors.length ? ' disabled' : '') + '>创建分层工程</button></div>');
+        }
+      };
+      importWorker.onerror = error => { importWorker?.terminate(); importWorker = null; openDialog("无法导入 Spectre 网表", '<p class="muted-copy">' + escapeHtml(error.message || "Worker 执行失败") + '</p>'); };
+      importWorker.postMessage({ sources, mainPath: sources[0].path });
+    } catch (error) { openDialog("无法读取网表", '<p class="muted-copy">' + escapeHtml(error.message) + '</p>'); }
+  });
   function newProject() {
     saveCurrentPage();
     const page = { id: makePageId(), state: { version: 1, name: "未命名原理图 " + (pages.length + 1), components: [], wires: [] }, selected: null, undoStack: [], redoStack: [] };
@@ -689,11 +940,26 @@
   }
   $("#new-btn").onclick = newProject; $("#new-tab-btn").onclick = newProject;
   $("#document-tabs").addEventListener("click", event => { const tab = event.target.closest("[data-page]"); if (tab) switchPage(tab.dataset.page); });
-  function loadDemo() { const before = snapshot(); state = C.demo(); ensureNetNames(); selected = { kind: "component", id: "pmos" }; commit(before); render(); fitView(); toast("CMOS 示例已加载"); }
+  function loadDemo() { if (activeProject()) { const page = pageRecord(C.demo()); pages.push(page); activePageId = ""; switchPage(page.id); selected = { kind: "component", id: "pmos" }; render(); toast("CMOS 示例已在新标签打开"); return; } const before = snapshot(); state = C.demo(); ensureNetNames(); selected = { kind: "component", id: "pmos" }; commit(before); render(); fitView(); toast("CMOS 示例已加载"); }
   $("#demo-btn").onclick = loadDemo; $("#empty-demo").onclick = loadDemo; $("#check-btn").onclick = runCheck;
   $("#help-btn").onclick = () => openDialog("使用帮助", '<p class="help-intro">从左侧元件库添加元件。拖动元件调整位置，点击两个引脚建立连线。</p><div class="shortcut-row"><span>选择工具</span><kbd>V</kbd></div><div class="shortcut-row"><span>框选多个元件</span><kbd>Shift 加选</kbd></div><div class="shortcut-row"><span>连线工具</span><kbd>W</kbd></div><div class="shortcut-row"><span>旋转元件</span><kbd>R</kbd></div><div class="shortcut-row"><span>删除选择</span><kbd>Delete</kbd></div><div class="shortcut-row"><span>撤销 / 重做</span><span><kbd>Ctrl Z</kbd> <kbd>Ctrl Shift Z</kbd></span></div><div class="shortcut-row"><span>取消连线</span><kbd>Esc</kbd></div>');
   $("#close-dialog").onclick = () => $("#app-dialog").close();
-  $("#dialog-content").addEventListener("click", event => { const id = event.target.closest("[data-issue-component]")?.dataset.issueComponent; if (id) { selected = { kind: "component", id }; $("#app-dialog").close(); render(); } });
+  $("#dialog-content").addEventListener("click", event => {
+    const dependency = event.target.closest("[data-pick-dependency]")?.dataset.pickDependency;
+    if (dependency === "files") return $("#dependency-input").click();
+    if (dependency === "folder") return $("#dependency-folder-input").click();
+    if (event.target.closest("[data-cancel-import]")) { importWorker?.terminate(); importWorker = null; $("#app-dialog").close(); toast("已取消导入"); return; }
+    if (event.target.closest("[data-dismiss-import]")) { pendingSpectreProject = null; $("#app-dialog").close(); return; }
+    if (event.target.closest("[data-confirm-import]") && pendingSpectreProject) {
+      const resolutions = {}; $$(".resolution-select").forEach(select => { resolutions[select.dataset.resolutionKey] = select.value; });
+      const project = Object.keys(resolutions).length && pendingSpectreSources ? S.parse(pendingSpectreSources, { mainPath: pendingSpectreMainPath, resolutions }) : pendingSpectreProject;
+      $$(".model-mapping-select").forEach(select => { project.mappings[select.dataset.modelName] = { ...(project.mappings[select.dataset.modelName] || {}), symbol: select.value, confidence: "manual" }; });
+      pendingSpectreProject = null; pendingSpectreSources = null; pendingSpectreMainPath = "";
+      const page = pageRecord(null, makePageId(), project, project.top); pages.push(page); activePageId = ""; $("#app-dialog").close(); switchPage(page.id); toast("Spectre 分层工程已创建"); return;
+    }
+    const id = event.target.closest("[data-issue-component]")?.dataset.issueComponent; if (id) { selected = { kind: "component", id }; $("#app-dialog").close(); render(); }
+  });
+  $("#hierarchy-breadcrumbs").addEventListener("click", event => { const target = event.target.closest("[data-open-circuit]"); if (target) openCircuit(target.dataset.openCircuit); });
   $("#open-library").onclick = () => $("#library-pane").classList.add("open"); $("#close-library").onclick = () => $("#library-pane").classList.remove("open");
   document.addEventListener("keydown", event => {
     if (event.target.matches("input,select,textarea")) return;
