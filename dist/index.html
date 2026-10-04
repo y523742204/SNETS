@@ -5,7 +5,7 @@
 <meta name="theme-color" content="#f7f8fa"><meta name="description" content="SNETS IC 原理图工作台：放置元件、连接引脚、编辑参数并保存你的电路设计。">
 <title>SNETS · IC 原理图工作台</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ec7145'/%3E%3Cpath d='M10 10h12v12H10zM6 12h4m-4 8h4m12-8h4m-4 8h4M12 6v4m8-4v4m-8 12v4m8-4v4' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="./styles.css?v=4"><script defer src="./component-library.js?v=4"></script><script defer src="./spectre-parser.js?v=4"></script><script defer src="./model.js?v=4"></script><script defer src="./app.js?v=4"></script>
+<link rel="stylesheet" href="./styles.css?v=5"><script defer src="./component-library.js?v=4"></script><script defer src="./spectre-parser.js?v=4"></script><script defer src="./model.js?v=7"></script><script defer src="./app.js?v=8"></script>
 <style>.net-label{font-family:"IBM Plex Mono",monospace;font-size:10px;fill:var(--draw-text);paint-order:stroke;stroke:#fff;stroke-width:5px;stroke-linejoin:round}.junction-dot{fill:var(--draw);stroke:#fff;stroke-width:1.5px}.model-mapping-choice{display:grid;grid-template-columns:minmax(110px,auto) minmax(180px,1fr);align-items:center;gap:6px 10px;margin-top:10px}.model-mapping-choice small{grid-column:2;color:var(--muted);font-weight:400}</style>
 </head>
 <body>
@@ -33,7 +33,7 @@
     <div class="library-footer"><span class="library-indicator"></span>标准元件库 <span>v1.0</span></div>
   </aside>
   <main class="editor">
-    <div class="document-tabs" id="document-tabs"><div class="document-tab"><span data-icon="file-circuit"></span><span id="tab-name">CMOS 反相器</span><span class="tab-dot"></span></div><button class="icon-button" id="new-tab-btn" title="新建原理图" data-icon="plus"></button><span class="document-type">SCHEMATIC EDITOR</span></div>
+    <div class="document-tabs" id="document-tabs"><div class="document-tab"><span data-icon="file-circuit"></span><span id="tab-name">CMOS 反相器</span></div><button class="icon-button" id="new-tab-btn" title="新建原理图" data-icon="plus"></button><span class="document-type">SCHEMATIC EDITOR</span></div>
     <div class="toolbar">
       <button class="icon-button mobile-library" id="open-library" title="打开元件库" data-icon="blocks"></button>
       <div class="tool-group"><button class="tool-button active" data-tool="select" title="选择 (V)" aria-label="选择工具"><span data-icon="cursor"></span><span>选择</span></button><button class="tool-button" data-tool="wire" title="连线 (W)" aria-label="连线工具"><span data-icon="wire"></span><span>连线</span></button><button class="tool-button" data-tool="pan" title="移动画布 (H)" aria-label="移动画布"><span data-icon="hand"></span></button></div>

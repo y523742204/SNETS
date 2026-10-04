@@ -288,6 +288,12 @@ test("organizes components compactly and routes every wire around unrelated symb
     for (let ai = 1; ai < aPoints.length; ai++) for (let bi = 1; bi < bPoints.length; bi++) {
       assert.equal(hasPositiveOverlap(aPoints[ai - 1], aPoints[ai], bPoints[bi - 1], bPoints[bi]), false, `${a.id} overlaps ${b.id}`);
     }
+    const bends = points => points.slice(1, -1).filter((point, index) => (points[index].x === point.x) !== (point.x === points[index + 2].x));
+    const liesOn = (point, c, d) => c.x === d.x
+      ? point.x === c.x && point.y >= Math.min(c.y, d.y) && point.y <= Math.max(c.y, d.y)
+      : point.y === c.y && point.x >= Math.min(c.x, d.x) && point.x <= Math.max(c.x, d.x);
+    for (const bend of bends(aPoints)) for (let index = 1; index < bPoints.length; index++) assert.equal(liesOn(bend, bPoints[index - 1], bPoints[index]), false, `${a.id} bend coincides with ${b.id}`);
+    for (const bend of bends(bPoints)) for (let index = 1; index < aPoints.length; index++) assert.equal(liesOn(bend, aPoints[index - 1], aPoints[index]), false, `${b.id} bend coincides with ${a.id}`);
   }
   assert.equal(JSON.stringify(C.validate(JSON.parse(JSON.stringify(organized)))), JSON.stringify(organized));
 });
@@ -370,4 +376,93 @@ test("provides a two-terminal standard PORT and maps Spectre port instances to i
   assert.equal(importedPort.type, "port");
   assert.equal(C.definition(importedPort).pins.length, 2);
   assert.deepEqual(Array.from(importedPort.nodes), ["rf", "0"]);
+});
+
+test("keeps both PORT terminals visibly connected after organizing a congested top level", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit, S = sandbox.SpectreImport;
+  const project = S.parse([{ name: "ports.scs", path: "ports.scs", text: `
+subckt ideal_balun d c p n
+K0 (d 0 p c) transformer n1=2
+K1 (d 0 c n) transformer n1=2
+ends ideal_balun
+subckt pa_top IN IP OUTN OUTP VB VB2 AVDD AVSS
+ends pa_top
+I0 (IN IP OUTN OUTP VB VB2 AVDD AVSS) pa_top
+I2 (net7 net013 OUTN OUTP) ideal_balun
+I1 (net8 net014 IN IP) ideal_balun
+V3 (VB2 0) vsource dc=480m
+V2 (VB 0) vsource dc=480m
+V1 (AVDD 0) vsource dc=1
+V0 (AVSS 0) vsource dc=0
+PORT1 (net7 AVSS) port r=50 type=sine
+PORT0 (net8 AVSS) port r=50 type=sine
+` }]);
+  const state = C.organize(C.validate(S.view(project, "$root")));
+  const port = state.components.find(component => component.ref === "PORT1");
+  const portWires = state.wires.filter(wire => wire.from.component === port.id || wire.to.component === port.id);
+  const routes = C.wireRoutes(state);
+  assert.equal(portWires.length, 2);
+  for (const wire of state.wires) {
+    const points = routes.get(wire.id), start = C.endpoint(state, wire.from), end = C.endpoint(state, wire.to);
+    assert.deepEqual(points[0], start);
+    assert.deepEqual(points.at(-1), end);
+    assert.ok(points.length > 2);
+  }
+});
+
+test("reroutes ordinary and saved wires instead of crossing a component interior", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit;
+  const input = C.component("input", 100, 300, "IN1", "input");
+  const blocker = C.component("inverter", 400, 300, "U1", "blocker");
+  const output = C.component("output", 700, 300, "OUT1", "output");
+  const wire = { id: "wire", from: { component: input.id, pin: "P" }, to: { component: output.id, pin: "P" }, manual: { axis: "x", value: 400 } };
+  const state = { version: 1, name: "Obstacle", components: [input, blocker, output], wires: [wire] };
+  const points = C.wireRoute(state, wire);
+  const box = C.componentBounds(blocker);
+  const crossesInterior = (a, b) => a.x === b.x
+    ? a.x > box.left && a.x < box.right && Math.max(a.y, b.y) > box.top && Math.min(a.y, b.y) < box.bottom
+    : a.y > box.top && a.y < box.bottom && Math.max(a.x, b.x) > box.left && Math.min(a.x, b.x) < box.right;
+  assert.ok(points.length > 2);
+  for (let index = 1; index < points.length; index++) {
+    assert.ok(points[index - 1].x === points[index].x || points[index - 1].y === points[index].y);
+    assert.equal(crossesInterior(points[index - 1], points[index]), false);
+  }
+});
+
+test("separates different-net bends while allowing only straight perpendicular crossings", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit;
+  const components = [
+    C.component("input", 100, 100, "A", "a"), C.component("output", 500, 300, "B", "b"),
+    C.component("input", 100, 300, "C", "c"), C.component("output", 500, 500, "D", "d")
+  ];
+  const wires = [
+    { id: "first", net: "net_a", from: { component: "a", pin: "P" }, to: { component: "b", pin: "P" }, manual: { axis: "x", value: 300 } },
+    { id: "second", net: "net_b", from: { component: "c", pin: "P" }, to: { component: "d", pin: "P" }, manual: { axis: "x", value: 300 } }
+  ];
+  const routes = C.wireRoutes({ version: 1, name: "Bends", components, wires });
+  const first = routes.get("first"), second = routes.get("second");
+  const bends = points => points.slice(1, -1).filter((point, index) => (points[index].x === point.x) !== (point.x === points[index + 2].x));
+  const liesOn = (point, a, b) => a.x === b.x
+    ? point.x === a.x && point.y >= Math.min(a.y, b.y) && point.y <= Math.max(a.y, b.y)
+    : point.y === a.y && point.x >= Math.min(a.x, b.x) && point.x <= Math.max(a.x, b.x);
+  for (const bend of bends(first)) for (let index = 1; index < second.length; index++) assert.equal(liesOn(bend, second[index - 1], second[index]), false);
+  for (const bend of bends(second)) for (let index = 1; index < first.length; index++) assert.equal(liesOn(bend, first[index - 1], first[index]), false);
 });

@@ -67,11 +67,19 @@
   }
 
   const compactRoute = points => points.filter((point, index) => !index || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
-  function wireRoute(state, wire) {
+  function candidateRoute(state, wire) {
     const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
-    if (wire.manual) return compactRoute(route(start, end, wire.manual));
-    if (Array.isArray(wire.waypoints) && wire.waypoints.length) return compactRoute([start, ...wire.waypoints, end]);
-    return compactRoute(route(start, end, wire.auto));
+    return compactRoute(wire.manual
+      ? route(start, end, wire.manual)
+      : Array.isArray(wire.waypoints) && wire.waypoints.length
+        ? [start, ...wire.waypoints, end]
+        : route(start, end, wire.auto));
+  }
+  function wireRoute(state, wire) {
+    const candidate = candidateRoute(state, wire);
+    const orthogonal = candidate.every((point, index) => !index || point.x === candidate[index - 1].x || point.y === candidate[index - 1].y);
+    if (orthogonal && !routeCrossesComponents(state, wire, candidate)) return candidate;
+    return findOrthogonalPath(state, wire, new Map(), "current-wire");
   }
   const pathData = points => points.map((point, index) => (index ? "L" : "M") + point.x + " " + point.y).join(" ");
   const wirePath = (state, wire) => pathData(wireRoute(state, wire));
@@ -83,6 +91,23 @@
     if ((item.rotation || 0) % 180) [width, height] = [height, width];
     const pad = clearance || 0;
     return { id: item.id, left: item.x - width / 2 - pad, right: item.x + width / 2 + pad, top: item.y - height / 2 - pad, bottom: item.y + height / 2 + pad, width, height };
+  }
+
+  function segmentCrossesInterior(a, b, box) {
+    if (a.x === b.x) return a.x > box.left && a.x < box.right && Math.max(a.y, b.y) > box.top && Math.min(a.y, b.y) < box.bottom;
+    if (a.y === b.y) return a.y > box.top && a.y < box.bottom && Math.max(a.x, b.x) > box.left && Math.min(a.x, b.x) < box.right;
+    return true;
+  }
+
+  function routeCrossesComponents(state, wire, points, clearance = 0) {
+    for (let index = 1; index < points.length; index++) {
+      for (const item of state.components) {
+        if (item.id === wire.from.component && index === 1) continue;
+        if (item.id === wire.to.component && index === points.length - 1) continue;
+        if (segmentCrossesInterior(points[index - 1], points[index], componentBounds(item, clearance))) return true;
+      }
+    }
+    return false;
   }
 
   function componentRole(item) {
@@ -209,6 +234,40 @@
       ? a.x + "," + a.y + ":" + b.x + "," + b.y
       : b.x + "," + b.y + ":" + a.x + "," + a.y;
   }
+  const routingOccupancy = () => ({ edges: new Map(), bends: new Map(), segments: [] });
+  const addOwner = (map, key, net) => {
+    if (!map.has(key)) map.set(key, new Set());
+    map.get(key).add(net);
+  };
+  const hasOtherOwner = (map, key, net) => map.has(key) && [...map.get(key)].some(owner => owner !== net);
+  const isBend = (before, point, after) => (before.x === point.x) !== (point.x === after.x);
+  const pointOnSegment = (point, a, b) => a.x === b.x
+    ? point.x === a.x && point.y >= Math.min(a.y, b.y) && point.y <= Math.max(a.y, b.y)
+    : point.y === a.y && point.x >= Math.min(a.x, b.x) && point.x <= Math.max(a.x, b.x);
+  const segmentsOverlap = (a, b, c, d) => a.y === b.y && c.y === d.y && a.y === c.y
+    ? Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) > Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x))
+    : a.x === b.x && c.x === d.x && a.x === c.x && Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) > Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y));
+
+  function hasAmbiguousCorner(points, occupancy, net) {
+    for (let index = 1; index < points.length - 1; index++) {
+      if (isBend(points[index - 1], points[index], points[index + 1]) && occupancy.segments.some(segment => segment.net !== net && pointOnSegment(points[index], segment.a, segment.b))) return true;
+    }
+    for (const [key, owners] of occupancy.bends) {
+      if (![...owners].some(owner => owner !== net)) continue;
+      const [x, y] = key.split(",").map(Number), point = { x, y };
+      if (points.some((end, index) => index > 0 && pointOnSegment(point, points[index - 1], end))) return true;
+    }
+    return false;
+  }
+
+  function conflictsWithRouting(points, occupancy, net) {
+    if (hasAmbiguousCorner(points, occupancy, net)) return true;
+    for (let index = 1; index < points.length; index++) {
+      const a = points[index - 1], b = points[index];
+      if (occupancy.segments.some(segment => segment.net !== net && segmentsOverlap(a, b, segment.a, segment.b))) return true;
+    }
+    return false;
+  }
   function escapePoint(item, point, other) {
     const box = componentBounds(item, 20), dx = point.x - item.x, dy = point.y - item.y;
     if (Math.abs(dx) >= Math.abs(dy) && dx) return { x: snap(dx > 0 ? box.right : box.left), y: snap(point.y) };
@@ -225,14 +284,36 @@
     });
   }
 
+  function fallbackDetour(start, end, obstacles, occupancy, routeNet) {
+    const top = snap(Math.min(...obstacles.map(box => box.top), start.y, end.y) - 40);
+    const bottom = snap(Math.max(...obstacles.map(box => box.bottom), start.y, end.y) + 40);
+    const left = snap(Math.min(...obstacles.map(box => box.left), start.x, end.x) - 40);
+    const right = snap(Math.max(...obstacles.map(box => box.right), start.x, end.x) + 40);
+    const candidates = [
+      [start, { x: end.x, y: start.y }, end],
+      [start, { x: start.x, y: end.y }, end],
+      [start, { x: start.x, y: top }, { x: end.x, y: top }, end],
+      [start, { x: start.x, y: bottom }, { x: end.x, y: bottom }, end],
+      [start, { x: left, y: start.y }, { x: left, y: end.y }, end],
+      [start, { x: right, y: start.y }, { x: right, y: end.y }, end]
+    ].map(simplify).filter(points => points.every((point, index) => !index || !obstacles.some(box => segmentCrossesInterior(points[index - 1], point, box))) && !conflictsWithRouting(points, occupancy, routeNet));
+    candidates.sort((a, b) => {
+      const score = points => points.slice(1).reduce((sum, point, index) => sum + Math.abs(point.x - points[index].x) + Math.abs(point.y - points[index].y), 0) + Math.max(0, points.length - 2) * 280;
+      return score(a) - score(b);
+    });
+    return candidates[0] || null;
+  }
+
   function findOrthogonalPath(next, wire, occupied, routeNet) {
+    const occupancy = occupied?.edges ? occupied : { edges: occupied || new Map(), bends: new Map(), segments: [] };
     const startItem = next.components.find(item => item.id === wire.from.component), endItem = next.components.find(item => item.id === wire.to.component);
     const start = endpoint(next, wire.from), end = endpoint(next, wire.to);
     const startEscape = escapePoint(startItem, start, end), endEscape = escapePoint(endItem, end, start);
-    const obstacles = next.components.map(item => componentBounds(item, 20));
+    const obstacles = next.components.map(item => componentBounds(item, item.id === startItem.id || item.id === endItem.id ? 0 : 20));
     const allX = obstacles.flatMap(box => [box.left, box.right]).concat([startEscape.x, endEscape.x]);
     const allY = obstacles.flatMap(box => [box.top, box.bottom]).concat([startEscape.y, endEscape.y]);
-    const bounds = { left: snap(Math.min(...allX) - 100), right: snap(Math.max(...allX) + 100), top: snap(Math.min(...allY) - 100), bottom: snap(Math.max(...allY) + 100) };
+    const routingMargin = 160 + Math.min(1600, next.wires.length * 40);
+    const bounds = { left: snap(Math.min(...allX) - routingMargin), right: snap(Math.max(...allX) + routingMargin), top: snap(Math.min(...allY) - routingMargin), bottom: snap(Math.max(...allY) + routingMargin) };
     const allowed = new Set([pointKey(startEscape), pointKey(endEscape)]);
     const blocked = point => !allowed.has(pointKey(point)) && obstacles.some(box => point.x > box.left && point.x < box.right && point.y > box.top && point.y < box.bottom);
     const directions = [{ x: 20, y: 0, id: "r" }, { x: -20, y: 0, id: "l" }, { x: 0, y: 20, id: "d" }, { x: 0, y: -20, id: "u" }];
@@ -240,16 +321,20 @@
     const firstKey = stateKey(startEscape, "-"); costs.set(firstKey, 0); nodes.set(firstKey, startEscape);
     heap.push({ point: startEscape, direction: "-", g: 0, f: (Math.abs(endEscape.x - startEscape.x) + Math.abs(endEscape.y - startEscape.y)) / 20, key: firstKey });
     let goal = null, expansions = 0;
-    while (heap.length && expansions++ < 80000) {
+    while (heap.length && expansions++ < 1000000) {
       const current = heap.pop();
       if (current.g !== costs.get(current.key)) continue;
       if (current.point.x === endEscape.x && current.point.y === endEscape.y) { goal = current.key; break; }
       for (const direction of directions) {
         const point = { x: current.point.x + direction.x, y: current.point.y + direction.y };
         if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom || blocked(point)) continue;
-        const occupiedNet = occupied.get(edgeKey(current.point, point));
+        const occupiedNet = occupancy.edges.get(edgeKey(current.point, point));
         if (occupiedNet !== undefined && occupiedNet !== routeNet) continue;
-        const bend = current.direction !== "-" && current.direction !== direction.id ? 14 : 0;
+        if (occupancy.segments.some(segment => segment.net !== routeNet && segmentsOverlap(current.point, point, segment.a, segment.b))) continue;
+        const changesDirection = current.direction !== "-" && current.direction !== direction.id;
+        if (hasOtherOwner(occupancy.bends, pointKey(point), routeNet)) continue;
+        if (changesDirection && occupancy.segments.some(segment => segment.net !== routeNet && pointOnSegment(current.point, segment.a, segment.b))) continue;
+        const bend = changesDirection ? 14 : 0;
         const reuse = occupiedNet === routeNet ? -0.55 : 0;
         const nearObstacle = directions.some(offset => blocked({ x: point.x + offset.x, y: point.y + offset.y })) ? 0.2 : 0;
         const g = current.g + 1 + bend + reuse + nearObstacle, key = stateKey(point, direction.id);
@@ -259,20 +344,38 @@
         heap.push({ point, direction: direction.id, g, f: g + h, key });
       }
     }
-    if (!goal) return simplify(route(start, end));
+    if (!goal) {
+      const detour = fallbackDetour(startEscape, endEscape, obstacles, occupancy, routeNet);
+      return detour ? simplify([start, ...detour, end]) : simplify([start, startEscape]);
+    }
     const gridPath = [];
     for (let key = goal; key; key = parents.get(key)) gridPath.push(nodes.get(key));
     gridPath.reverse();
-    return simplify([start, startEscape, ...gridPath, endEscape, end]);
+    const result = simplify([start, startEscape, ...gridPath, endEscape, end]);
+    if (hasAmbiguousCorner(result, occupancy, routeNet)) {
+      const detour = fallbackDetour(startEscape, endEscape, obstacles, occupancy, routeNet);
+      return detour ? simplify([start, ...detour, end]) : simplify([start, startEscape]);
+    }
+    return result;
   }
 
   function registerOccupied(points, net, occupied) {
-    for (let index = 1; index < points.length; index++) {
-      const a = points[index - 1], b = points[index], dx = Math.sign(b.x - a.x) * 20, dy = Math.sign(b.y - a.y) * 20;
+    const occupancy = occupied?.edges ? occupied : { edges: occupied, bends: new Map(), segments: [] };
+    const compact = simplify(points);
+    compact.slice(1, -1).forEach((point, index) => {
+      if (isBend(compact[index], point, compact[index + 2])) addOwner(occupancy.bends, pointKey(point), net);
+    });
+    for (let index = 1; index < compact.length; index++) {
+      const a = compact[index - 1], b = compact[index];
+      occupancy.segments.push({ a, b, net });
+      const distance = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+      if (distance % 20) continue;
+      const dx = Math.sign(b.x - a.x) * 20, dy = Math.sign(b.y - a.y) * 20;
       let point = { x: a.x, y: a.y }, guard = 0;
       while ((point.x !== b.x || point.y !== b.y) && guard++ < 10000) {
         const next = { x: point.x + dx, y: point.y + dy };
-        occupied.set(edgeKey(point, next), net || ""); point = next;
+        occupancy.edges.set(edgeKey(point, next), net || "");
+        point = next;
       }
     }
   }
@@ -294,21 +397,71 @@
     return new Map(wires.map((wire, index) => [wire.id, "network:" + find(index)]));
   }
 
+  function routeIsComplete(state, wire, points) {
+    if (!Array.isArray(points) || points.length < 2) return false;
+    const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
+    const first = points[0], last = points[points.length - 1];
+    return first.x === start.x && first.y === start.y && last.x === end.x && last.y === end.y;
+  }
+
+  function routeBatch(state, ordered, useCandidates) {
+    const routeNets = routingNetKeys(state.wires), queue = [ordered.slice()], queued = new Set(), maxAttempts = Math.min(64, ordered.length * 4 + 1);
+    let best = { routes: new Map(), complete: -1 }, attempts = 0;
+    while (queue.length && attempts++ < maxAttempts) {
+      const sequence = queue.shift(), signature = sequence.map(item => item.wire.id).join("|");
+      if (queued.has(signature)) continue;
+      queued.add(signature);
+      const occupied = routingOccupancy(), routes = new Map(), failed = [];
+      state.wires.forEach(wire => {
+        const startItem = state.components.find(item => item.id === wire.from.component), endItem = state.components.find(item => item.id === wire.to.component);
+        const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
+        const startEscape = escapePoint(startItem, start, end), endEscape = escapePoint(endItem, end, start);
+        registerOccupied([start, startEscape], routeNets.get(wire.id), occupied);
+        registerOccupied([endEscape, end], routeNets.get(wire.id), occupied);
+      });
+      sequence.forEach(({ wire }) => {
+        const routeNet = routeNets.get(wire.id), candidate = useCandidates ? candidateRoute(state, wire) : null;
+        const orthogonal = candidate?.every((point, index) => !index || point.x === candidate[index - 1].x || point.y === candidate[index - 1].y);
+        const points = candidate && orthogonal && !routeCrossesComponents(state, wire, candidate) && !conflictsWithRouting(candidate, occupied, routeNet)
+          ? candidate
+          : findOrthogonalPath(state, wire, occupied, routeNet);
+        routes.set(wire.id, points);
+        if (routeIsComplete(state, wire, points)) registerOccupied(points, routeNet, occupied);
+        else failed.push(wire);
+      });
+      const complete = ordered.length - failed.length;
+      if (complete > best.complete) best = { routes, complete };
+      if (!failed.length) return routes;
+      queue.push([...failed.map(wire => ({ wire })), ...sequence.filter(item => !failed.some(wire => wire.id === item.wire.id))]);
+      failed.forEach(wire => queue.push([{ wire }, ...sequence.filter(item => item.wire.id !== wire.id)]));
+    }
+    return best.routes;
+  }
+
+  function wireRoutes(state) {
+    const ordered = state.wires.map((wire, index) => ({ wire, index, priority: wire.manual ? 0 : Array.isArray(wire.waypoints) && wire.waypoints.length ? 1 : 2 }))
+      .sort((a, b) => a.priority - b.priority || a.index - b.index);
+    return routeBatch(state, ordered, true);
+  }
+
   function organize(input) {
     const next = clone(input);
     if (!next.components.length) return next;
     layoutComponents(next);
-    const occupied = new Map();
-    const routeNets = routingNetKeys(next.wires);
-    const ordered = next.wires.slice().sort((a, b) => String(a.net || "").localeCompare(String(b.net || "")) ||
+    const orderedWires = next.wires.slice().sort((a, b) => String(a.net || "").localeCompare(String(b.net || "")) ||
       Math.abs(endpoint(next, b.from).x - endpoint(next, b.to).x) + Math.abs(endpoint(next, b.from).y - endpoint(next, b.to).y) -
       Math.abs(endpoint(next, a.from).x - endpoint(next, a.to).x) - Math.abs(endpoint(next, a.from).y - endpoint(next, a.to).y));
-    ordered.forEach(wire => {
-      delete wire.manual; delete wire.auto;
-      const routeNet = routeNets.get(wire.id);
-      const points = findOrthogonalPath(next, wire, occupied, routeNet);
+    orderedWires.forEach(wire => { delete wire.manual; delete wire.auto; });
+    const routes = routeBatch(next, orderedWires.map((wire, index) => ({ wire, index })), false);
+    const incomplete = orderedWires.filter(wire => !routeIsComplete(next, wire, routes.get(wire.id)));
+    if (incomplete.length) throw new Error("无法生成完整路径：" + incomplete.map(wire => {
+      const from = next.components.find(item => item.id === wire.from.component)?.ref + "." + wire.from.pin;
+      const to = next.components.find(item => item.id === wire.to.component)?.ref + "." + wire.to.pin;
+      return from + "→" + to;
+    }).join(", "));
+    orderedWires.forEach(wire => {
+      const points = routes.get(wire.id);
       wire.waypoints = points.slice(1, -1);
-      registerOccupied(points, routeNet, occupied);
     });
     return validate(next);
   }
@@ -406,5 +559,5 @@
     return issues;
   }
 
-  global.Circuit = { definitions, definition, clone, id: makeId, component, pinPoint, endpoint, route, wireRoute, organize, componentBounds, pathData, wirePath, demo, validate, check };
+  global.Circuit = { definitions, definition, clone, id: makeId, component, pinPoint, endpoint, route, wireRoute, wireRoutes, organize, componentBounds, pathData, wirePath, demo, validate, check };
 })(typeof window !== "undefined" ? window : globalThis);
