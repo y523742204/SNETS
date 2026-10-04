@@ -117,6 +117,11 @@
   let renderedComponentIds = null;
   let renderedWireIds = null;
   let renderedRoutes = null;
+  let routedSignature = "";
+  let routedRoutes = null;
+  let previewRenderFrame = 0;
+  let viewportRenderTimer = 0;
+  let organizeWorker = null;
   let pointer = { x: 0, y: 0 };
   let toastTimer;
   const svg = $("#schematic");
@@ -360,9 +365,40 @@
     });
     return junctions;
   }
-  function renderCanvas() {
+  function routingSignature() {
+    const components = state.components.map(component => [component.id, component.type, component.symbol || "", component.x, component.y, component.rotation, (component.dynamicPins || []).join(",")].join(":"));
+    const wires = state.wires.map(wire => [wire.id, wire.net || "", wire.from.component, wire.from.pin, wire.to.component, wire.to.pin,
+      wire.manual ? wire.manual.axis + ":" + wire.manual.value : "", wire.auto ? wire.auto.axis + ":" + wire.auto.value : "",
+      (wire.waypoints || []).map(point => point.x + "," + point.y).join(";")].join(":"));
+    return components.join("|") + "//" + wires.join("|");
+  }
+  function routesForRender(preview) {
+    const signature = routingSignature();
+    if (routedRoutes && routedSignature === signature) return routedRoutes;
+    if (preview && routedRoutes) {
+      const routes = new Map();
+      state.wires.forEach(wire => {
+        const previous = routedRoutes.get(wire.id), start = C.endpoint(state, wire.from), end = C.endpoint(state, wire.to);
+        const unchanged = previous?.length && previous[0].x === start.x && previous[0].y === start.y && previous.at(-1).x === end.x && previous.at(-1).y === end.y;
+        routes.set(wire.id, unchanged ? previous : C.route(start, end));
+      });
+      return routes;
+    }
+    routedRoutes = C.wireRoutes(state);
+    routedSignature = signature;
+    return routedRoutes;
+  }
+  function schedulePreviewRender() {
+    if (previewRenderFrame) return;
+    previewRenderFrame = requestAnimationFrame(() => { previewRenderFrame = 0; renderCanvas(true); });
+  }
+  function scheduleViewportRender() {
+    clearTimeout(viewportRenderTimer);
+    viewportRenderTimer = setTimeout(() => { viewportRenderTimer = 0; renderCanvas(); }, 80);
+  }
+  function renderCanvas(preview = false) {
     if (!wireStart) $("#preview-layer").innerHTML = "";
-    const routeCache = C.wireRoutes(state); renderedRoutes = routeCache;
+    const routeCache = routesForRender(preview); renderedRoutes = routeCache;
     const routeFor = wire => {
       if (!routeCache.has(wire.id)) routeCache.set(wire.id, C.wireRoute(state, wire));
       return routeCache.get(wire.id);
@@ -815,11 +851,11 @@
           const origin = drag.wireOffsets[wire.id];
           if (origin) wire.manual = { axis: origin.axis, value: origin.value + (origin.axis === "x" ? dx : dy) };
         });
-        renderCanvas();
+        schedulePreviewRender();
       }
       return;
     }
-    if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled || activeProject()) { const snapStep = activeProject() ? 20 : gridSize; x = Math.round(x / snapStep) * snapStep; y = Math.round(y / snapStep) * snapStep; } if (c.x !== x || c.y !== y) { invalidateOrganizedRoutes([c.id]); c.x = x; c.y = y; drag.moved = true; renderCanvas(); } }
+    if (drag.kind === "component") { const c = state.components.find(item => item.id === drag.id); let x = p.x - drag.offsetX, y = p.y - drag.offsetY; if (snapEnabled || activeProject()) { const snapStep = activeProject() ? 20 : gridSize; x = Math.round(x / snapStep) * snapStep; y = Math.round(y / snapStep) * snapStep; } if (c.x !== x || c.y !== y) { invalidateOrganizedRoutes([c.id]); c.x = x; c.y = y; drag.moved = true; schedulePreviewRender(); } }
     if (drag.kind === "wire-segment") {
       const distance = Math.hypot(p.x - drag.start.x, p.y - drag.start.y);
       if (distance > 2 || drag.moved) {
@@ -828,10 +864,10 @@
         if (snapEnabled) value = Math.round(value / gridSize) * gridSize;
         wire.manual = { axis: drag.axis, value };
         drag.moved = true;
-        renderCanvas();
+        schedulePreviewRender();
       }
     }
-    if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); renderCanvas(); }
+    if (drag.kind === "pan") { const now = pointFromEvent(event); const box = drag.viewBox; svg.setAttribute("viewBox", [box[0] + drag.point.x - now.x, box[1] + drag.point.y - now.y, box[2], box[3]].join(" ")); scheduleViewportRender(); }
   });
   svg.addEventListener("pointerleave", () => {
     const hadHover = hoverPin || hoverWire;
@@ -853,7 +889,7 @@
     if (["component", "components", "wire-segment"].includes(drag?.kind) && drag.moved) { commit(drag.before); render(); }
     drag = null; try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
   });
-  svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; renderCanvas(); }, { passive: false });
+  svg.addEventListener("wheel", event => { event.preventDefault(); const box = svg.viewBox.baseVal; const p = pointFromEvent(event); const factor = event.deltaY > 0 ? 1.12 : 0.89; const nw = box.width * factor, nh = box.height * factor; svg.setAttribute("viewBox", [p.x - (p.x - box.x) * factor, p.y - (p.y - box.y) * factor, nw, nh].join(" ")); $("#zoom-value").textContent = Math.round(100 * 800 / nw) + "%"; scheduleViewportRender(); }, { passive: false });
 
   $("#component-grid").addEventListener("click", event => { const card = event.target.closest("[data-component-type]"); if (card) { const box = bounds(); addComponent(card.dataset.componentType, box.x + box.w / 2, box.y + box.h / 2); } });
   $("#component-grid").addEventListener("dragstart", event => { const card = event.target.closest("[data-component-type]"); if (card) event.dataTransfer.setData("text/snets-component", card.dataset.componentType); });
@@ -869,17 +905,24 @@
   $("#organize-btn").onclick = () => {
     if (!state.components.length) return toast("画布中没有需要整理的对象");
     const before = snapshot();
-    toast("正在整理器件与连线…");
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      try {
-        const organized = C.organize(state);
-        state = organized; activePage().state = state; selected = null;
-        commit(before); render(); requestAnimationFrame(fitView); toast("已整理全部器件与连线");
-      } catch (error) {
-        toast("整理失败，已保留原布局");
-        console.error("Schematic organize failed", error);
-      }
-    }));
+    const pageId = activePageId, circuitId = activeCircuitId(), startSignature = routingSignature(), button = $("#organize-btn");
+    organizeWorker?.terminate();
+    organizeWorker = new Worker("./layout-worker.js?v=1");
+    button.disabled = true;
+    toast("正在后台整理器件与连线…");
+    const finish = () => { organizeWorker?.terminate(); organizeWorker = null; button.disabled = false; };
+    organizeWorker.onmessage = event => {
+      const data = event.data;
+      if (data.type === "progress") { toast(data.message); return; }
+      if (data.type === "error") { finish(); toast("整理失败，已保留原布局"); console.error("Schematic organize failed", data.message); return; }
+      if (data.type !== "result") return;
+      finish();
+      if (activePageId !== pageId || activeCircuitId() !== circuitId || routingSignature() !== startSignature) { toast("工程已发生变化，已忽略过期的整理结果"); return; }
+      state = C.validate(data.state); activePage().state = state; selected = null;
+      commit(before); render(); requestAnimationFrame(fitView); toast("已整理全部器件与连线");
+    };
+    organizeWorker.onerror = error => { finish(); toast("整理失败，已保留原布局"); console.error("Schematic organize worker failed", error); };
+    organizeWorker.postMessage({ state: before });
   };
   $("#align-grid-btn").onclick = () => {
     if (!state.components.length && !state.wires.some(wire => wire.manual)) return toast("画布中没有需要对齐的对象");

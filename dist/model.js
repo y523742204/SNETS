@@ -234,7 +234,7 @@
       ? a.x + "," + a.y + ":" + b.x + "," + b.y
       : b.x + "," + b.y + ":" + a.x + "," + a.y;
   }
-  const routingOccupancy = () => ({ edges: new Map(), bends: new Map(), segments: [] });
+  const routingOccupancy = () => ({ edges: new Map(), bends: new Map(), segments: [], horizontal: new Map(), vertical: new Map() });
   const addOwner = (map, key, net) => {
     if (!map.has(key)) map.set(key, new Set());
     map.get(key).add(net);
@@ -248,9 +248,20 @@
     ? Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) > Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x))
     : a.x === b.x && c.x === d.x && a.x === c.x && Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) > Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y));
 
+  function indexedSegments(occupancy, a, b) {
+    if (a.y === b.y && occupancy.horizontal) return occupancy.horizontal.get(a.y) || [];
+    if (a.x === b.x && occupancy.vertical) return occupancy.vertical.get(a.x) || [];
+    return occupancy.segments;
+  }
+
+  function segmentsAtPoint(occupancy, point) {
+    if (!occupancy.horizontal || !occupancy.vertical) return occupancy.segments;
+    return [...(occupancy.horizontal.get(point.y) || []), ...(occupancy.vertical.get(point.x) || [])];
+  }
+
   function hasAmbiguousCorner(points, occupancy, net) {
     for (let index = 1; index < points.length - 1; index++) {
-      if (isBend(points[index - 1], points[index], points[index + 1]) && occupancy.segments.some(segment => segment.net !== net && pointOnSegment(points[index], segment.a, segment.b))) return true;
+      if (isBend(points[index - 1], points[index], points[index + 1]) && segmentsAtPoint(occupancy, points[index]).some(segment => segment.net !== net && pointOnSegment(points[index], segment.a, segment.b))) return true;
     }
     for (const [key, owners] of occupancy.bends) {
       if (![...owners].some(owner => owner !== net)) continue;
@@ -264,7 +275,7 @@
     if (hasAmbiguousCorner(points, occupancy, net)) return true;
     for (let index = 1; index < points.length; index++) {
       const a = points[index - 1], b = points[index];
-      if (occupancy.segments.some(segment => segment.net !== net && segmentsOverlap(a, b, segment.a, segment.b))) return true;
+      if (indexedSegments(occupancy, a, b).some(segment => segment.net !== net && segmentsOverlap(a, b, segment.a, segment.b))) return true;
     }
     return false;
   }
@@ -305,7 +316,7 @@
   }
 
   function findOrthogonalPath(next, wire, occupied, routeNet) {
-    const occupancy = occupied?.edges ? occupied : { edges: occupied || new Map(), bends: new Map(), segments: [] };
+    const occupancy = occupied?.edges ? occupied : { edges: occupied || new Map(), bends: new Map(), segments: [], horizontal: new Map(), vertical: new Map() };
     const startItem = next.components.find(item => item.id === wire.from.component), endItem = next.components.find(item => item.id === wire.to.component);
     const start = endpoint(next, wire.from), end = endpoint(next, wire.to);
     const startEscape = escapePoint(startItem, start, end), endEscape = escapePoint(endItem, end, start);
@@ -314,14 +325,22 @@
     const allY = obstacles.flatMap(box => [box.top, box.bottom]).concat([startEscape.y, endEscape.y]);
     const routingMargin = 160 + Math.min(1600, next.wires.length * 40);
     const bounds = { left: snap(Math.min(...allX) - routingMargin), right: snap(Math.max(...allX) + routingMargin), top: snap(Math.min(...allY) - routingMargin), bottom: snap(Math.max(...allY) + routingMargin) };
-    const allowed = new Set([pointKey(startEscape), pointKey(endEscape)]);
-    const blocked = point => !allowed.has(pointKey(point)) && obstacles.some(box => point.x > box.left && point.x < box.right && point.y > box.top && point.y < box.bottom);
+    const allowed = new Set([pointKey(startEscape), pointKey(endEscape)]), blockedPoints = new Set();
+    obstacles.forEach(box => {
+      for (let x = Math.floor(box.left / 20) * 20; x <= box.right; x += 20) {
+        if (x <= box.left || x >= box.right) continue;
+        for (let y = Math.floor(box.top / 20) * 20; y <= box.bottom; y += 20) {
+          if (y > box.top && y < box.bottom) blockedPoints.add(pointKey({ x, y }));
+        }
+      }
+    });
+    const blocked = point => !allowed.has(pointKey(point)) && blockedPoints.has(pointKey(point));
     const directions = [{ x: 20, y: 0, id: "r" }, { x: -20, y: 0, id: "l" }, { x: 0, y: 20, id: "d" }, { x: 0, y: -20, id: "u" }];
     const heap = new MinHeap(), costs = new Map(), parents = new Map(), nodes = new Map();
     const firstKey = stateKey(startEscape, "-"); costs.set(firstKey, 0); nodes.set(firstKey, startEscape);
     heap.push({ point: startEscape, direction: "-", g: 0, f: (Math.abs(endEscape.x - startEscape.x) + Math.abs(endEscape.y - startEscape.y)) / 20, key: firstKey });
     let goal = null, expansions = 0;
-    while (heap.length && expansions++ < 1000000) {
+    while (heap.length && expansions++ < 150000) {
       const current = heap.pop();
       if (current.g !== costs.get(current.key)) continue;
       if (current.point.x === endEscape.x && current.point.y === endEscape.y) { goal = current.key; break; }
@@ -330,10 +349,10 @@
         if (point.x < bounds.left || point.x > bounds.right || point.y < bounds.top || point.y > bounds.bottom || blocked(point)) continue;
         const occupiedNet = occupancy.edges.get(edgeKey(current.point, point));
         if (occupiedNet !== undefined && occupiedNet !== routeNet) continue;
-        if (occupancy.segments.some(segment => segment.net !== routeNet && segmentsOverlap(current.point, point, segment.a, segment.b))) continue;
+        if (indexedSegments(occupancy, current.point, point).some(segment => segment.net !== routeNet && segmentsOverlap(current.point, point, segment.a, segment.b))) continue;
         const changesDirection = current.direction !== "-" && current.direction !== direction.id;
         if (hasOtherOwner(occupancy.bends, pointKey(point), routeNet)) continue;
-        if (changesDirection && occupancy.segments.some(segment => segment.net !== routeNet && pointOnSegment(current.point, segment.a, segment.b))) continue;
+        if (changesDirection && segmentsAtPoint(occupancy, current.point).some(segment => segment.net !== routeNet && pointOnSegment(current.point, segment.a, segment.b))) continue;
         const bend = changesDirection ? 14 : 0;
         const reuse = occupiedNet === routeNet ? -0.55 : 0;
         const nearObstacle = directions.some(offset => blocked({ x: point.x + offset.x, y: point.y + offset.y })) ? 0.2 : 0;
@@ -360,14 +379,21 @@
   }
 
   function registerOccupied(points, net, occupied) {
-    const occupancy = occupied?.edges ? occupied : { edges: occupied, bends: new Map(), segments: [] };
+    const occupancy = occupied?.edges ? occupied : { edges: occupied, bends: new Map(), segments: [], horizontal: new Map(), vertical: new Map() };
     const compact = simplify(points);
     compact.slice(1, -1).forEach((point, index) => {
       if (isBend(compact[index], point, compact[index + 2])) addOwner(occupancy.bends, pointKey(point), net);
     });
     for (let index = 1; index < compact.length; index++) {
       const a = compact[index - 1], b = compact[index];
-      occupancy.segments.push({ a, b, net });
+      const segment = { a, b, net };
+      occupancy.segments.push(segment);
+      const segmentIndex = a.y === b.y ? occupancy.horizontal : occupancy.vertical;
+      if (segmentIndex) {
+        const coordinate = a.y === b.y ? a.y : a.x;
+        if (!segmentIndex.has(coordinate)) segmentIndex.set(coordinate, []);
+        segmentIndex.get(coordinate).push(segment);
+      }
       const distance = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
       if (distance % 20) continue;
       const dx = Math.sign(b.x - a.x) * 20, dy = Math.sign(b.y - a.y) * 20;
@@ -405,7 +431,7 @@
   }
 
   function routeBatch(state, ordered, useCandidates) {
-    const routeNets = routingNetKeys(state.wires), queue = [ordered.slice()], queued = new Set(), maxAttempts = Math.min(64, ordered.length * 4 + 1);
+    const routeNets = routingNetKeys(state.wires), queue = [ordered.slice()], queued = new Set(), maxAttempts = Math.min(2, ordered.length * 2 + 1);
     let best = { routes: new Map(), complete: -1 }, attempts = 0;
     while (queue.length && attempts++ < maxAttempts) {
       const sequence = queue.shift(), signature = sequence.map(item => item.wire.id).join("|");
