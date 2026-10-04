@@ -26,6 +26,8 @@
     undo: '<path d="M3 10h11a6 6 0 0 1 0 12M3 10l5-5m-5 5 5 5" transform="translate(0 -3)"/>',
     redo: '<path d="M21 10H10a6 6 0 0 0 0 12m11-12-5-5m5 5-5 5" transform="translate(0 -3)"/>',
     rotate: '<path d="M20 9a8 8 0 1 0 0 7M20 3v6h-6"/>',
+    "flip-horizontal": '<path d="M12 3v18M9 7l-5 5 5 5m6-10 5 5-5 5"/>',
+    "flip-vertical": '<path d="M3 12h18M7 9l5-5 5 5m-10 6 5 5 5-5"/>',
     trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
     magnet: '<path d="M5 3v10a7 7 0 0 0 14 0V3h-4v10a3 3 0 0 1-6 0V3ZM5 7h4m6 0h4"/>',
     grid: '<path d="M8 3v18M16 3v18M3 8h18M3 16h18"/>', maximize: '<path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>',
@@ -45,7 +47,7 @@
 输出要求：
 1. 只输出一个严格合法的 JSON 对象，不要输出 Markdown 代码围栏、解释、注释或省略号。
 2. 顶层必须是：{"version":1,"name":"工程名称","components":[],"wires":[]}。
-3. 每个 components 元素必须包含：id、type、x、y、rotation、ref、value。id 和 ref 在工程内唯一；x、y 使用 20 的整数倍；rotation 只能是 0、90、180、270。
+3. 每个 components 元素必须包含：id、type、x、y、rotation、ref、value。id 和 ref 在工程内唯一；x、y 使用 20 的整数倍；rotation 只能是 0、90、180、270。需要镜像时可增加 mirrorX:true（左右镜像）或 mirrorY:true（上下镜像）。
 4. 可用 type 与合法 pin：
    resistor(1,2)，inductor(1,2)，capacitor(1,2)，voltage(+,-)，current(+,-)，vdd(V)，gnd(0)，input(P)，output(P)，bidirectional(P)，port(1,2)，nmos(D,G,S,B)，pmos(S,G,D,B)，inverter(A,Y,VDD,VSS)，opamp(+,-,OUT)，transformer_ct(P1,PCT,P2,S1,SCT,S2)，nport(1,2,3,4)，diode(A,K)。
 5. 元件参数直接放在元件对象中：MOS 使用字符串 w、l；port 可使用字符串 num；nport 可使用字符串 z0；其余主要参数写入 value。即使某类元件没有参数，value 也必须是字符串。
@@ -330,7 +332,10 @@
       const point = C.pinPoint(c, pin.id);
       return '<g class="component-pin' + (isConnected(c.id, pin.id) ? " connected" : "") + (wireStart?.component === c.id && wireStart.pin === pin.id ? " wiring" : "") + '" data-component="' + escapeHtml(c.id) + '" data-pin="' + escapeHtml(pin.id) + '" transform="translate(' + (point.x - c.x) + " " + (point.y - c.y) + ')"><circle r="13" fill="transparent"/><circle class="pin-dot" r="3"/><title>' + escapeHtml(c.ref + " · " + pin.name) + '</title></g>';
     }).join("");
-    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="' + (-dw / 2) + '" y="' + (-dh / 2) + '" width="' + dw + '" height="' + dh + '" fill="transparent"/><g class="symbol-body" transform="rotate(' + c.rotation + ')">' + (d.body || defs.generic.body) + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
+    const radians = (c.rotation || 0) * Math.PI / 180, cos = Math.round(Math.cos(radians)), sin = Math.round(Math.sin(radians));
+    const sx = c.mirrorX ? -1 : 1, sy = c.mirrorY ? -1 : 1;
+    const symbolTransform = "matrix(" + (sx * cos) + " " + (sy * sin) + " " + (-sx * sin) + " " + (sy * cos) + " 0 0)";
+    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="' + (-dw / 2) + '" y="' + (-dh / 2) + '" width="' + dw + '" height="' + dh + '" fill="transparent"/><g class="symbol-body" transform="' + symbolTransform + '">' + (d.body || defs.generic.body) + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
   }
   function sameNetJunctions(wires, routes) {
     const groups = new Map();
@@ -366,7 +371,7 @@
     return junctions;
   }
   function routingSignature() {
-    const components = state.components.map(component => [component.id, component.type, component.symbol || "", component.x, component.y, component.rotation, (component.dynamicPins || []).join(",")].join(":"));
+    const components = state.components.map(component => [component.id, component.type, component.symbol || "", component.x, component.y, component.rotation, component.mirrorX ? 1 : 0, component.mirrorY ? 1 : 0, (component.dynamicPins || []).join(",")].join(":"));
     const wires = state.wires.map(wire => [wire.id, wire.net || "", wire.from.component, wire.from.pin, wire.to.component, wire.to.pin,
       wire.manual ? wire.manual.axis + ":" + wire.manual.value : "", wire.auto ? wire.auto.axis + ":" + wire.auto.value : "",
       (wire.waypoints || []).map(point => point.x + "," + point.y).join(";")].join(":"));
@@ -479,7 +484,7 @@
     if (selected?.kind === "multi") {
       const comps = state.components.filter(c => selected.components.includes(c.id));
       const rows = comps.slice(0, 60).map(c => '<li><span class="multi-dot"></span><b>' + escapeHtml(c.ref) + '</b><small>' + definitionFor(c).name + '</small></li>').join("");
-      content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + icon("blocks") + '</span><div><h3>已选择 ' + comps.length + ' 个元件</h3><p>' + (selected.wires.length ? selected.wires.length + " 条导线" : "多选模式") + '</p></div></div><div class="inspector-section"><div class="section-heading">批量操作</div><div class="multi-actions"><button class="button soft" data-action="rotate">' + icon("rotate") + '旋转</button><button class="button soft" data-action="duplicate">' + icon("copy") + '复制</button><button class="button soft" data-action="delete">' + icon("trash") + '删除</button><button class="button soft" data-action="clear">清除选择</button></div><ul class="multi-list">' + rows + '</ul><p class="muted-copy">拖动任一元件可整体移动，导线跟随引脚自动重排。按 <kbd>Delete</kbd> 删除全部。</p></div>';
+      content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + icon("blocks") + '</span><div><h3>已选择 ' + comps.length + ' 个元件</h3><p>' + (selected.wires.length ? selected.wires.length + " 条导线" : "多选模式") + '</p></div></div><div class="inspector-section"><div class="section-heading">批量操作</div><div class="multi-actions"><button class="button soft" data-action="rotate">' + icon("rotate") + '旋转</button><button class="button soft" data-action="mirror-x">' + icon("flip-horizontal") + '左右镜像</button><button class="button soft" data-action="mirror-y">' + icon("flip-vertical") + '上下镜像</button><button class="button soft" data-action="duplicate">' + icon("copy") + '复制</button><button class="button soft" data-action="delete">' + icon("trash") + '删除</button><button class="button soft" data-action="clear">清除选择</button></div><ul class="multi-list">' + rows + '</ul><p class="muted-copy">拖动任一元件可整体移动，导线跟随引脚自动重排。按 <kbd>Delete</kbd> 删除全部。</p></div>';
       return;
     }
     if (!component) {
@@ -494,7 +499,7 @@
     const d = definitionFor(component);
     const fields = d.fields.map(([key, label, unit]) => '<label class="field-label">' + label + '</label><div class="unit-field"><input data-prop="' + key + '" class="text-input mono" value="' + escapeHtml(component[key]) + '" maxlength="80"><span>' + unit + '</span></div>').join("");
     const pins = d.pins.map(pin => '<tr><td class="pin-letter">' + escapeHtml(pin.id) + '</td><td>' + pin.name + '</td><td><span class="' + (isConnected(component.id, pin.id) ? "connected-badge" : "unconnected") + '">' + (isConnected(component.id, pin.id) ? "已连接" : "未连接") + '</span></td></tr>').join("");
-    content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + symbolPreview(component.type) + '</span><div><h3>' + escapeHtml(component.ref) + ' / ' + d.name + '</h3><p>' + d.title + '</p></div><span class="selected-tag">实例</span></div><div class="inspector-section"><div class="section-heading">基本信息</div><label class="field-label">位号</label><input class="text-input mono" data-prop="ref" value="' + escapeHtml(component.ref) + '" maxlength="40"><label class="field-label">位置</label><div class="field-row"><div class="field-box"><span>X</span><input type="number" class="text-input mono" data-prop="x" value="' + component.x + '"></div><div class="field-box"><span>Y</span><input type="number" class="text-input mono" data-prop="y" value="' + component.y + '"></div></div><div class="rotation-row"><div class="unit-field"><input class="text-input mono" readonly value="' + component.rotation + '"><span>deg</span></div><button class="icon-button" data-action="rotate" title="旋转">' + icon("rotate") + '</button><button class="icon-button" data-action="duplicate" title="复制">' + icon("copy") + '</button></div></div>' + (fields ? '<div class="inspector-section"><div class="section-heading">电气参数</div>' + fields + '</div>' : "") + '<div class="inspector-section"><div class="section-heading">引脚连接<span class="count-badge">' + d.pins.length + '</span></div><table class="pin-table"><thead><tr><th>引脚</th><th>名称</th><th>状态</th></tr></thead><tbody>' + pins + '</tbody></table><div class="connection-note">' + icon("info") + '<span>点击画布中的引脚，即可开始连接。</span></div></div>';
+    content.innerHTML = '<div class="selected-component"><span class="selected-symbol">' + symbolPreview(component.type) + '</span><div><h3>' + escapeHtml(component.ref) + ' / ' + d.name + '</h3><p>' + d.title + '</p></div><span class="selected-tag">实例</span></div><div class="inspector-section"><div class="section-heading">基本信息</div><label class="field-label">位号</label><input class="text-input mono" data-prop="ref" value="' + escapeHtml(component.ref) + '" maxlength="40"><label class="field-label">位置</label><div class="field-row"><div class="field-box"><span>X</span><input type="number" class="text-input mono" data-prop="x" value="' + component.x + '"></div><div class="field-box"><span>Y</span><input type="number" class="text-input mono" data-prop="y" value="' + component.y + '"></div></div><div class="rotation-row"><div class="unit-field"><input class="text-input mono" readonly value="' + component.rotation + '"><span>deg</span></div><button class="icon-button" data-action="rotate" title="旋转">' + icon("rotate") + '</button><button class="icon-button" data-action="mirror-x" title="左右镜像">' + icon("flip-horizontal") + '</button><button class="icon-button" data-action="mirror-y" title="上下镜像">' + icon("flip-vertical") + '</button><button class="icon-button" data-action="duplicate" title="复制">' + icon("copy") + '</button></div></div>' + (fields ? '<div class="inspector-section"><div class="section-heading">电气参数</div>' + fields + '</div>' : "") + '<div class="inspector-section"><div class="section-heading">引脚连接<span class="count-badge">' + d.pins.length + '</span></div><table class="pin-table"><thead><tr><th>引脚</th><th>名称</th><th>状态</th></tr></thead><tbody>' + pins + '</tbody></table><div class="connection-note">' + icon("info") + '<span>点击画布中的引脚，即可开始连接。</span></div></div>';
   }
   function render() {
     renderCanvas(); renderInspector();
@@ -548,6 +553,12 @@
     state.wires.forEach(wire => { if (moved.has(wire.from.component) || moved.has(wire.to.component)) delete wire.waypoints; });
   }
   function rotateSelected() { const ids = selectedComponentIds(); if (!ids.length) return; const before = snapshot(); state.components.filter(c => ids.includes(c.id)).forEach(c => { c.rotation = (c.rotation + 90) % 360; }); invalidateOrganizedRoutes(ids); commit(before); render(); }
+  function mirrorSelected(axis) {
+    const ids = selectedComponentIds(); if (!ids.length) return;
+    const before = snapshot(), property = axis === "x" ? "mirrorX" : "mirrorY";
+    state.components.filter(component => ids.includes(component.id)).forEach(component => { component[property] = !component[property]; });
+    invalidateOrganizedRoutes(ids); commit(before); render();
+  }
   function duplicateSelected() {
     const ids = selectedComponentIds();
     if (!ids.length) return;
@@ -898,7 +909,7 @@
   $("#component-search").addEventListener("input", renderLibrary);
   $$("[data-category]").forEach(button => button.addEventListener("click", () => { category = button.dataset.category; $$("[data-category]").forEach(b => b.classList.toggle("active", b === button)); renderLibrary(); }));
   $$("[data-tool]").forEach(button => button.addEventListener("click", () => setTool(button.dataset.tool)));
-  $("#undo-btn").onclick = undo; $("#redo-btn").onclick = redo; $("#rotate-btn").onclick = rotateSelected; $("#delete-btn").onclick = deleteSelected; $("#fit-btn").onclick = fitView; $("#zoom-fit").onclick = fitView;
+  $("#undo-btn").onclick = undo; $("#redo-btn").onclick = redo; $("#rotate-btn").onclick = rotateSelected; $("#mirror-x-btn").onclick = () => mirrorSelected("x"); $("#mirror-y-btn").onclick = () => mirrorSelected("y"); $("#delete-btn").onclick = deleteSelected; $("#fit-btn").onclick = fitView; $("#zoom-fit").onclick = fitView;
   $("#zoom-in").onclick = () => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, clientX: svg.getBoundingClientRect().left + svg.clientWidth / 2, clientY: svg.getBoundingClientRect().top + svg.clientHeight / 2, cancelable: true }));
   $("#zoom-out").onclick = () => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: 100, clientX: svg.getBoundingClientRect().left + svg.clientWidth / 2, clientY: svg.getBoundingClientRect().top + svg.clientHeight / 2, cancelable: true }));
   $("#snap-btn").onclick = () => { snapEnabled = !snapEnabled; $("#snap-btn").classList.toggle("active", snapEnabled); $("#snap-btn").setAttribute("aria-pressed", snapEnabled); };
@@ -907,7 +918,7 @@
     const before = snapshot();
     const pageId = activePageId, circuitId = activeCircuitId(), startSignature = routingSignature(), button = $("#organize-btn");
     organizeWorker?.terminate();
-    organizeWorker = new Worker("./layout-worker.js?v=1");
+    organizeWorker = new Worker("./layout-worker.js?v=2");
     button.disabled = true;
     toast("正在后台整理器件与连线…");
     const finish = () => { organizeWorker?.terminate(); organizeWorker = null; button.disabled = false; };
@@ -983,7 +994,7 @@
     if (collapse && activeProject()) { S.setMemberExpanded(activeProject(), activeCircuitId(), collapse.dataset.memberCollapse, false); activePage().state = C.validate(S.view(activeProject(), activeCircuitId())); state = activePage().state; selected = null; render(); persist(); toast("成员已重新折叠"); return; }
     const pageButton = event.target.closest("[data-member-page]");
     if (pageButton) { const input = $("#member-search"); if (!input) return; input.dataset.page = String(Math.max(0, Number(input.dataset.page || 0) + Number(pageButton.dataset.memberPage))); input.dispatchEvent(new Event("input", { bubbles: true })); return; }
-    const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "duplicate") duplicateSelected(); if (action === "delete") deleteSelected(); if (action === "clear") { selected = null; render(); }
+    const action = event.target.closest("[data-action]")?.dataset.action; if (action === "rotate") rotateSelected(); if (action === "mirror-x") mirrorSelected("x"); if (action === "mirror-y") mirrorSelected("y"); if (action === "duplicate") duplicateSelected(); if (action === "delete") deleteSelected(); if (action === "clear") { selected = null; render(); }
   });
   $("#properties-content").addEventListener("input", event => {
     if (event.target.id !== "member-search" || !activeProject() || selected?.kind !== "component") return;

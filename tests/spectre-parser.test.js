@@ -160,6 +160,46 @@ test("v1 model validation remains compatible", () => {
   assert.equal(sandbox.Circuit.validate(demo).version, 1);
 });
 
+test("mirrors component symbols and electrical pins across canvas axes", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit, component = C.component("resistor", 200, 300, "R1");
+  const original = C.pinPoint(component, "1");
+  component.mirrorX = true;
+  const horizontal = C.pinPoint(component, "1");
+  assert.ok(Math.abs((horizontal.x - component.x) + (original.x - component.x)) < 1e-9);
+  assert.equal(horizontal.y - component.y, original.y - component.y);
+  component.mirrorY = true;
+  const both = C.pinPoint(component, "1");
+  assert.ok(Math.abs((both.x - component.x) + (original.x - component.x)) < 1e-9);
+  assert.ok(Math.abs((both.y - component.y) + (original.y - component.y)) < 1e-9);
+  const restored = C.validate({ version: 1, name: "Mirror", components: [component], wires: [] });
+  assert.equal(restored.components[0].mirrorX, true);
+  assert.equal(restored.components[0].mirrorY, true);
+});
+
+test("persists mirrors in Spectre v2 drawing layouts", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const S = sandbox.SpectreImport, C = sandbox.Circuit;
+  const project = S.parse([{ name: "mirror.scs", path: "mirror.scs", text: "R0 (a b) resistor r=1k" }]);
+  const state = C.validate(S.view(project, "$root"));
+  state.components[0].mirrorX = true;
+  state.components[0].mirrorY = true;
+  S.syncLayout(project, "$root", state);
+  const restored = C.validate(S.view(S.validateProject(JSON.parse(JSON.stringify(project))), "$root"));
+  assert.equal(restored.components[0].mirrorX, true);
+  assert.equal(restored.components[0].mirrorY, true);
+});
+
 test("v2 project survives JSON round trip with hierarchy and groups intact", () => {
   const S = parser();
   const project = S.parse([{ name: "roundtrip.scs", path: "roundtrip.scs", text: "subckt child A B\nR0 (A B) resistor r=1k\nR1 (A B) resistor r=1k\nends child\nX0 (in out) child" }]);

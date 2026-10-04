@@ -1,6 +1,6 @@
 "use strict";
 
-self.importScripts("./component-library.js", "./model.js");
+self.importScripts("./component-library.js?v=4", "./model.js?v=9");
 
 self.onmessage = event => {
   try {

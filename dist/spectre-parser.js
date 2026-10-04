@@ -576,6 +576,7 @@
       const pos = positions[instance.id];
       return {
         id: instance.id, type: standardType(mapping.symbol, instance.nodes.length), x: pos.x, y: pos.y, rotation: pos.rotation || 0,
+        ...(pos.mirrorX === true ? { mirrorX: true } : {}), ...(pos.mirrorY === true ? { mirrorY: true } : {}),
         ref: instance.ref, value: instance.master, master: instance.master, symbol: mapping.symbol,
         mappingConfidence: mapping.confidence || "manual", dynamicPins: mappedPins.slice(), nodes: instance.nodes.slice(),
         parametersRaw: instance.parametersRaw, parameters: clone(instance.parameters || {}), source: clone(instance.source || {}),
@@ -628,6 +629,7 @@
           x: position.x,
           y: position.y,
           rotation: position.rotation || 0,
+          ...(position.mirrorX === true ? { mirrorX: true } : {}), ...(position.mirrorY === true ? { mirrorY: true } : {}),
           ref: "PIN" + (index + 1),
           value: name,
           boundaryPort: true,
@@ -705,7 +707,10 @@
 
   function syncLayout(project, circuitId, state) {
     const target = project.layouts[circuitId] ||= {};
-    state.components.forEach(component => { target[component.id] = { x: component.x, y: component.y, rotation: component.rotation || 0 }; });
+    state.components.forEach(component => { target[component.id] = {
+      x: component.x, y: component.y, rotation: component.rotation || 0,
+      ...(component.mirrorX === true ? { mirrorX: true } : {}), ...(component.mirrorY === true ? { mirrorY: true } : {})
+    }; });
     target.__wires = {};
     state.wires.forEach(wire => {
       if (wire.manual) target.__wires[wire.id] = { axis: wire.manual.axis, value: wire.manual.value };

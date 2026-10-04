@@ -42,9 +42,11 @@
     const radians = (componentInstance.rotation || 0) * Math.PI / 180;
     const cos = Math.round(Math.cos(radians));
     const sin = Math.round(Math.sin(radians));
+    const rotatedX = pin.x * cos - pin.y * sin;
+    const rotatedY = pin.x * sin + pin.y * cos;
     return {
-      x: componentInstance.x + pin.x * cos - pin.y * sin,
-      y: componentInstance.y + pin.x * sin + pin.y * cos
+      x: componentInstance.x + (componentInstance.mirrorX ? -rotatedX : rotatedX),
+      y: componentInstance.y + (componentInstance.mirrorY ? -rotatedY : rotatedY)
     };
   }
 
@@ -521,6 +523,8 @@
       if (typeof item.ref !== "string" || !item.ref.trim() || typeof item.value !== "string") throw new Error("元件参数无效");
       ids.add(item.id);
       const clean = { id: item.id, type: item.type, x: item.x, y: item.y, rotation: item.rotation, ref: item.ref, value: item.value };
+      if (item.mirrorX === true) clean.mirrorX = true;
+      if (item.mirrorY === true) clean.mirrorY = true;
       ["master", "symbol", "mappingConfidence", "parametersRaw", "sourceInstanceId"].forEach(key => { if (typeof item[key] === "string") clean[key] = item[key]; });
       if (Array.isArray(item.dynamicPins)) clean.dynamicPins = item.dynamicPins.map(String);
       if (Array.isArray(item.nodes)) clean.nodes = item.nodes.map(String);
