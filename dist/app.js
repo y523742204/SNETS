@@ -34,10 +34,29 @@
     close: '<path d="m6 6 12 12M6 18 18 6"/>', save: '<path d="M4 3h13l4 4v14H3V3Zm3 0v6h10V3M7 21v-8h10v8"/>',
     image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 6-6 5 5 3-3 4 4"/>',
     copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
+    sparkles: '<path d="m12 3 1.4 4.1L17.5 8.5l-4.1 1.4L12 14l-1.4-4.1-4.1-1.4 4.1-1.4ZM19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8ZM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8Z"/>',
     "align-grid": '<path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/><path d="M2 12h20M12 2v20"/>'
   };
   const icon = name => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || icons.chip) + '</svg>';
   function hydrateIcons(scope = document) { scope.querySelectorAll("[data-icon]").forEach(el => { el.innerHTML = icon(el.dataset.icon); }); }
+
+  const AI_SCHEMATIC_PROMPT = `你是 SNETS 原理图工程 JSON 生成器。请根据我在末尾给出的电路需求，生成一个可直接由 SNETS-HTML“打开工程 JSON”导入的完整工程文件。
+
+输出要求：
+1. 只输出一个严格合法的 JSON 对象，不要输出 Markdown 代码围栏、解释、注释或省略号。
+2. 顶层必须是：{"version":1,"name":"工程名称","components":[],"wires":[]}。
+3. 每个 components 元素必须包含：id、type、x、y、rotation、ref、value。id 和 ref 在工程内唯一；x、y 使用 20 的整数倍；rotation 只能是 0、90、180、270。
+4. 可用 type 与合法 pin：
+   resistor(1,2)，inductor(1,2)，capacitor(1,2)，voltage(+,-)，current(+,-)，vdd(V)，gnd(0)，input(P)，output(P)，bidirectional(P)，port(1,2)，nmos(D,G,S,B)，pmos(S,G,D,B)，inverter(A,Y,VDD,VSS)，opamp(+,-,OUT)，transformer_ct(P1,PCT,P2,S1,SCT,S2)，nport(1,2,3,4)，diode(A,K)。
+5. 元件参数直接放在元件对象中：MOS 使用字符串 w、l；port 可使用字符串 num；nport 可使用字符串 z0；其余主要参数写入 value。即使某类元件没有参数，value 也必须是字符串。
+6. 每个 wires 元素必须包含：id、from、to、net。from/to 的格式为 {"component":"元件id","pin":"合法pin"}。wire id 唯一；不得连接不存在的元件或引脚；不得把同一个引脚连接到自身。
+7. 同一电气网络的所有 wire 使用完全相同且区分大小写的 net 名称。不要仅因名称相似而合并网络；GND、gnd、VSS、0 视为不同名称，除非需求明确要求连接。
+8. 布局按信号流从左到右，输入在左、输出在右、电源在上、地和电压源在下。元件中心至少间隔 160；不要重叠。无需提供 manual、auto 或 waypoints，SNETS 会生成正交连线。
+9. 确保 JSON 可由 JSON.parse 解析，所有键和字符串使用双引号，不允许尾随逗号、NaN、Infinity 或 undefined。
+10. 输出前自行核对：所有 id 唯一；每个端点存在；pin 与 type 匹配；电源和地连接符合需求；components 与 wires 均为数组。
+
+我的原理图需求：
+【请在这里填写电路功能、器件参数、接口和电源要求】`;
 
   function openWorkspaceDb() {
     return new Promise((resolve, reject) => {
@@ -938,7 +957,22 @@
     const circuit = event.target.closest("[data-circuit]"); if (circuit) return openCircuit(circuit.dataset.circuit);
     const row = event.target.closest("[data-layer]"); if (row) { selected = { kind: "component", id: row.dataset.layer }; render(); }
   });
-  $$(".rail-item[data-panel]").forEach(button => button.addEventListener("click", () => { $$(".rail-item[data-panel]").forEach(b => b.classList.toggle("active", b === button)); ["library", "layers", "files"].forEach(name => $("#" + name + "-content").hidden = name !== button.dataset.panel); $("#library-title").textContent = { library: "元件库", layers: "电路图层", files: "工程文件" }[button.dataset.panel]; }));
+  $$(".rail-item[data-panel]").forEach(button => button.addEventListener("click", () => { $$(".rail-item[data-panel]").forEach(b => b.classList.toggle("active", b === button)); ["library", "layers", "files", "ai"].forEach(name => $("#" + name + "-content").hidden = name !== button.dataset.panel); $("#library-title").textContent = { library: "元件库", layers: "电路图层", files: "工程文件", ai: "AI 辅助生成" }[button.dataset.panel]; $("#library-count").hidden = button.dataset.panel !== "library"; }));
+  const aiPrompt = $("#ai-prompt");
+  aiPrompt.value = AI_SCHEMATIC_PROMPT;
+  $("#reset-ai-prompt").onclick = () => { aiPrompt.value = AI_SCHEMATIC_PROMPT; toast("已恢复固定提示词"); };
+  $("#copy-ai-prompt").onclick = async () => {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(aiPrompt.value);
+      else throw new Error("Clipboard API unavailable");
+      toast("提示词已复制");
+    } catch (_) {
+      aiPrompt.focus(); aiPrompt.select();
+      const copied = document.execCommand?.("copy");
+      toast(copied ? "提示词已复制" : "请按 Ctrl+C 复制提示词");
+    }
+  };
+  $("#ai-import-btn").onclick = () => $("#file-input").click();
   $$("[data-inspector]").forEach(button => button.addEventListener("click", () => { $$("[data-inspector]").forEach(b => b.classList.toggle("active", b === button)); $("#properties-content").hidden = button.dataset.inspector !== "properties"; $("#design-content").hidden = button.dataset.inspector !== "design"; }));
   $("#design-name").addEventListener("change", event => { const value = event.target.value.trim(); if (!value) return render(); if (activeProject()) { activeProject().name = value.slice(0, 160); state.name = activeCircuitId() === activeProject().top ? activeProject().name : state.name; persist(); render(); return; } const before = snapshot(); state.name = value.slice(0, 80); commit(before); render(); });
   $("#grid-select").addEventListener("change", event => { gridSize = Number(event.target.value); $("#grid-size").textContent = gridSize; renderCanvas(); });

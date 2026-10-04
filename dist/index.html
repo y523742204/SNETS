@@ -5,7 +5,7 @@
 <meta name="theme-color" content="#f7f8fa"><meta name="description" content="SNETS IC 原理图工作台：放置元件、连接引脚、编辑参数并保存你的电路设计。">
 <title>SNETS · IC 原理图工作台</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ec7145'/%3E%3Cpath d='M10 10h12v12H10zM6 12h4m-4 8h4m12-8h4m-4 8h4M12 6v4m8-4v4m-8 12v4m8-4v4' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="./styles.css?v=5"><script defer src="./component-library.js?v=4"></script><script defer src="./spectre-parser.js?v=4"></script><script defer src="./model.js?v=7"></script><script defer src="./app.js?v=8"></script>
+<link rel="stylesheet" href="./styles.css?v=6"><script defer src="./component-library.js?v=4"></script><script defer src="./spectre-parser.js?v=4"></script><script defer src="./model.js?v=7"></script><script defer src="./app.js?v=9"></script>
 <style>.net-label{font-family:"IBM Plex Mono",monospace;font-size:10px;fill:var(--draw-text);paint-order:stroke;stroke:#fff;stroke-width:5px;stroke-linejoin:round}.junction-dot{fill:var(--draw);stroke:#fff;stroke-width:1.5px}.model-mapping-choice{display:grid;grid-template-columns:minmax(110px,auto) minmax(180px,1fr);align-items:center;gap:6px 10px;margin-top:10px}.model-mapping-choice small{grid-column:2;color:var(--muted);font-weight:400}</style>
 </head>
 <body>
@@ -19,6 +19,7 @@
     <button class="rail-item active" data-panel="library" title="元件库"><span data-icon="blocks"></span><span>元件</span></button>
     <button class="rail-item" data-panel="layers" title="电路元件列表"><span data-icon="layers"></span><span>图层</span></button>
     <button class="rail-item" data-panel="files" title="工程文件"><span data-icon="folder"></span><span>工程</span></button>
+    <button class="rail-item" data-panel="ai" title="AI 辅助生成原理图"><span data-icon="sparkles"></span><span>AI 生成</span></button>
     <div class="rail-bottom"><button class="rail-item" id="help-btn" title="使用帮助"><span data-icon="help"></span><span>帮助</span></button></div>
   </nav>
   <aside class="library-pane" id="library-pane">
@@ -30,6 +31,7 @@
     </section>
     <section id="layers-content" hidden><p class="pane-description">当前原理图中的全部元件</p><div id="layer-list"></div></section>
     <section id="files-content" hidden><div class="project-card"><span data-icon="file-circuit"></span><strong id="project-card-name">CMOS 反相器</strong><small id="project-card-meta">当前工程 · 自动保存在此浏览器</small></div><button class="button full primary" id="spectre-import-btn"><span data-icon="circuit"></span>导入 Spectre 网表</button><button class="button full" id="dependency-btn"><span data-icon="folder"></span>选择依赖文件或文件夹</button><p class="dependency-note" id="dependency-note">尚未选择补充依赖</p><button class="button full" id="save-project-btn"><span data-icon="save"></span>保存工程 JSON</button><button class="button full" id="import-btn"><span data-icon="folder"></span>打开工程 JSON</button><button class="button full" id="new-btn"><span data-icon="plus"></span>新建原理图</button><button class="text-button" id="demo-btn">加载 CMOS 示例</button></section>
+    <section id="ai-content" hidden><div class="ai-intro"><span data-icon="sparkles"></span><div><strong>AI 辅助生成原理图</strong><p>复制提示词交给 Agent 或大模型，取得 JSON 后直接导入。</p></div></div><ol class="ai-steps"><li>在提示词末尾填写电路需求</li><li>复制并发送给 Agent 或大模型</li><li>将返回内容保存为 <b>.snets.json</b></li></ol><label class="field-label" for="ai-prompt">SNETS 工程 JSON 提示词</label><textarea id="ai-prompt" class="ai-prompt" spellcheck="false" aria-label="AI 生成提示词"></textarea><div class="ai-actions"><button class="button full primary" id="copy-ai-prompt"><span data-icon="copy"></span>复制提示词</button><button class="button full" id="reset-ai-prompt">恢复固定提示词</button><button class="button full" id="ai-import-btn"><span data-icon="folder"></span>导入生成的 JSON</button></div><p class="ai-note">文件只在当前浏览器中读取。导入前会校验元件类型、引脚和连接关系。</p></section>
     <div class="library-footer"><span class="library-indicator"></span>标准元件库 <span>v1.0</span></div>
   </aside>
   <main class="editor">
