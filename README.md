@@ -4,6 +4,8 @@ SNETS 是一个在浏览器中运行的 IC 原理图编辑器，可手动绘制�
 
 在线使用：[https://y523742204.github.io/SNETS/](https://y523742204.github.io/SNETS/)
 
+详细操作说明：[SNETS 操作者使用手册](MANUAL.md)
+
 ## 主要功能
 
 - 放置、移动、旋转和镜像元件，支持连线、框选、撤销与重做。
