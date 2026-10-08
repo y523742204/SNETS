@@ -139,6 +139,29 @@ X0 (a b c d e) cell
   }
 });
 
+test("uses vertical basic passives and centers MOS drain-source pins", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  const definitions = sandbox.SNETS_COMPONENT_LIBRARY;
+  for (const type of ["resistor", "inductor", "capacitor", "diode"]) {
+    const pins = definitions[type].pins;
+    assert.equal(pins[0].x, 0, `${type} pin 1 is centered`);
+    assert.equal(pins[1].x, 0, `${type} pin 2 is centered`);
+    assert.ok(pins[0].y < 0, `${type} pin 1 is above`);
+    assert.ok(pins[1].y > 0, `${type} pin 2 is below`);
+  }
+  assert.equal(definitions.diode.category, "basic");
+  for (const type of ["nmos", "pmos"]) {
+    const pins = Object.fromEntries(Array.from(definitions[type].pins, pin => [pin.id, pin]));
+    assert.equal(pins.D.x, 0);
+    assert.equal(pins.S.x, 0);
+    assert.equal(pins.B.x, 0);
+    assert.equal(pins.G.x, -80);
+  }
+});
+
 test("preserves every signal and reference terminal of a 29-port nport", () => {
   const S = parser();
   const nodes = Array.from({ length: 29 }, (_, index) => `${index + 1} gnd`).join(" ");

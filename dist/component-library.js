@@ -17,7 +17,7 @@
  * defaults  额外字段的默认值
  * body      以 (0, 0) 为中心绘制的 SVG 内容
  *
- * 分类与顺序：基础（R、L、C、源、VDD、GND、PIN）→ 晶体管（NMOS、PMOS）
+ * 分类与顺序：基础（R、L、C、D、源、VDD、GND、PIN）→ 晶体管（NMOS、PMOS）
  * → 器件（反相器、运放、变压器、N 端口）。库中显示顺序即下方条目顺序。
  */
 (function (global) {
@@ -45,10 +45,10 @@
       category: "basic",
       prefix: "L",
       value: "10n",
-      pins: [{ id: "1", name: "端口 1", x: -60, y: 0 }, { id: "2", name: "端口 2", x: 60, y: 0 }],
+      pins: [{ id: "1", name: "端口 1", x: 0, y: -60 }, { id: "2", name: "端口 2", x: 0, y: 60 }],
       fields: [["value", "电感值", "H"]],
       defaults: {},
-      body: '<path d="M-60 0H-36C-36-22-12-22-12 0C-12-22 12-22 12 0C12-22 36-22 36 0H60"/>'
+      body: '<g transform="rotate(90)"><path d="M-60 0H-36C-36-22-12-22-12 0C-12-22 12-22 12 0C12-22 36-22 36 0H60"/></g>'
     },
 
     capacitor: {
@@ -64,6 +64,18 @@
       fields: [["value", "电容值", "F"]],
       defaults: {},
       body: '<path d="M0-60V-7M-24-7H24M-24 7H24M0 7V60"/>'
+    },
+
+    diode: {
+      name: "二极管",
+      title: "Diode",
+      category: "basic",
+      prefix: "D",
+      value: "diode",
+      pins: [{ id: "A", name: "阳极", x: 0, y: -60 }, { id: "K", name: "阴极", x: 0, y: 60 }],
+      fields: [["value", "型号", ""]],
+      defaults: {},
+      body: '<g transform="rotate(90)"><path d="M-60 0H-18M18 0H60M-18-28V28L18 0ZM18-28V28"/></g>'
     },
 
     voltage: {
@@ -174,15 +186,16 @@
       category: "transistor",
       prefix: "M",
       value: "nmos",
+      width: 160,
       pins: [
-        { id: "D", name: "漏极", x: 20, y: -60 },
-        { id: "G", name: "栅极", x: -60, y: 0 },
-        { id: "S", name: "源极", x: 20, y: 60 },
-        { id: "B", name: "衬底", x: 20, y: 0 }
+        { id: "D", name: "漏极", x: 0, y: -60 },
+        { id: "G", name: "栅极", x: -80, y: 0 },
+        { id: "S", name: "源极", x: 0, y: 60 },
+        { id: "B", name: "衬底", x: 0, y: 0 }
       ],
       fields: [["w", "沟道宽度", "μm"], ["l", "沟道长度", "μm"]],
       defaults: { w: "2.0", l: "0.18" },
-      body: '<path d="M-60 0H-12M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><path d="M12 20 L20 25 L12 30"/>'
+      body: '<g transform="translate(-20 0)"><path d="M-60 0H-12M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><path d="M12 20 L20 25 L12 30"/></g>'
     },
 
     pmos: {
@@ -191,15 +204,16 @@
       category: "transistor",
       prefix: "M",
       value: "pmos",
+      width: 160,
       pins: [
-        { id: "S", name: "源极", x: 20, y: -60 },
-        { id: "G", name: "栅极", x: -60, y: 0 },
-        { id: "D", name: "漏极", x: 20, y: 60 },
-        { id: "B", name: "衬底", x: 20, y: 0 }
+        { id: "S", name: "源极", x: 0, y: -60 },
+        { id: "G", name: "栅极", x: -80, y: 0 },
+        { id: "D", name: "漏极", x: 0, y: 60 },
+        { id: "B", name: "衬底", x: 0, y: 0 }
       ],
       fields: [["w", "沟道宽度", "μm"], ["l", "沟道长度", "μm"]],
       defaults: { w: "4.0", l: "0.18" },
-      body: '<path d="M-60 0H-25M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><circle cx="-19" cy="0" r="6"/><path d="M12 -30 L20 -25 L12 -20"/>'
+      body: '<g transform="translate(-20 0)"><path d="M-60 0H-25M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><circle cx="-19" cy="0" r="6"/><path d="M12 -30 L20 -25 L12 -20"/></g>'
     },
 
     inverter: {
@@ -269,18 +283,6 @@
       fields: [["value", "Touchstone 文件", ""], ["z0", "参考阻抗", "Ω"]],
       defaults: { z0: "50" },
       body: '<rect x="-38" y="-60" width="76" height="120" rx="3"/><path d="M-60-40H-38M-60 40H-38M38-40H60M38 40H60"/><text x="0" y="-4" text-anchor="middle" fill="currentColor" stroke="none" font-size="14">N-PORT</text><text x="0" y="16" text-anchor="middle" fill="currentColor" stroke="none" font-size="10">Touchstone</text>'
-    },
-
-    diode: {
-      name: "二极管",
-      title: "Diode",
-      category: "device",
-      prefix: "D",
-      value: "diode",
-      pins: [{ id: "A", name: "阳极", x: -60, y: 0 }, { id: "K", name: "阴极", x: 60, y: 0 }],
-      fields: [["value", "型号", ""]],
-      defaults: {},
-      body: '<path d="M-60 0H-18M18 0H60M-18-28V28L18 0ZM18-28V28"/>'
     },
 
     generic: {
