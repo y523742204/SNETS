@@ -369,17 +369,21 @@ test("places semantic dynamic pins on conventional symbol sides", () => {
   pins.forEach(pin => { assert.equal(Math.abs(pin.x % 20), 0); assert.equal(Math.abs(pin.y % 20), 0); });
 });
 
-test("organizes components compactly and routes every wire around unrelated symbols", () => {
+test("replans every wire around unrelated symbols without moving components", () => {
   const sandbox = { self: null };
   sandbox.self = sandbox;
   vm.createContext(sandbox);
   loadBrowserScript("component-library.js", sandbox);
   loadBrowserScript("spectre-parser.js", sandbox);
   loadBrowserScript("model.js", sandbox);
-  const C = sandbox.Circuit, organized = C.organize(C.demo());
-  const input = organized.components.find(component => component.type === "input");
-  const output = organized.components.find(component => component.type === "output");
-  assert.ok(input.x < output.x);
+  const C = sandbox.Circuit, original = C.demo();
+  original.wires[0].manual = { axis: "x", value: 320 };
+  original.wires[0].auto = { axis: "y", value: 260 };
+  [2, 7, 8].forEach(index => { original.wires[index].net = "VOUT"; });
+  const organized = C.organize(original);
+  assert.deepEqual(Array.from(organized.components, component => [component.id, component.x, component.y, component.rotation, component.mirrorX, component.mirrorY]),
+    Array.from(original.components, component => [component.id, component.x, component.y, component.rotation, component.mirrorX, component.mirrorY]));
+  assert.equal(organized.wires.some(wire => wire.manual || wire.auto), false);
   const boxes = organized.components.map(component => C.componentBounds(component));
   for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
     assert.equal(boxes[a].right > boxes[b].left && boxes[a].left < boxes[b].right && boxes[a].bottom > boxes[b].top && boxes[a].top < boxes[b].bottom, false);
@@ -397,6 +401,19 @@ test("organizes components compactly and routes every wire around unrelated symb
       });
     }
   });
+  const outputNetSegments = organized.wires.filter(wire => wire.net === "VOUT").flatMap(wire => {
+    const points = C.wireRoute(organized, wire);
+    return points.slice(1).map((point, index) => [points[index], point]);
+  });
+  const covers = (x1, y1, x2, y2) => outputNetSegments.some(([a, b]) =>
+    a.y === b.y && y1 === y2 && a.y === y1 && Math.min(a.x, b.x) <= Math.min(x1, x2) && Math.max(a.x, b.x) >= Math.max(x1, x2) ||
+    a.x === b.x && x1 === x2 && a.x === x1 && Math.min(a.y, b.y) <= Math.min(y1, y2) && Math.max(a.y, b.y) >= Math.max(y1, y2));
+  const pmos = organized.components.find(component => component.type === "pmos"), nmos = organized.components.find(component => component.type === "nmos");
+  const output = organized.components.find(component => component.type === "output"), capacitor = organized.components.find(component => component.type === "capacitor");
+  const pmosDrain = C.pinPoint(pmos, "D"), nmosDrain = C.pinPoint(nmos, "D"), outputPin = C.pinPoint(output, "P"), capacitorPin = C.pinPoint(capacitor, "1");
+  assert.equal(covers(pmosDrain.x, pmosDrain.y, nmosDrain.x, nmosDrain.y), true);
+  assert.equal(covers(pmosDrain.x, outputPin.y, outputPin.x, outputPin.y), true);
+  assert.equal(covers(capacitorPin.x, outputPin.y, capacitorPin.x, capacitorPin.y), true);
   const hasPositiveOverlap = (a, b, c, d) => {
     if (a.y === b.y && c.y === d.y && a.y === c.y) return Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) > Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x));
     if (a.x === b.x && c.x === d.x && a.x === c.x) return Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) > Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y));
@@ -424,6 +441,52 @@ test("organizes components compactly and routes every wire around unrelated symb
     for (const bend of bends(bPoints)) for (let index = 1; index < aPoints.length; index++) assert.equal(liesOn(bend, aPoints[index - 1], aPoints[index]), false, `${b.id} bend coincides with ${a.id}`);
   }
   assert.equal(JSON.stringify(C.validate(JSON.parse(JSON.stringify(organized)))), JSON.stringify(organized));
+});
+
+test("keeps unaligned component placement while replanning its route", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit;
+
+  const input = C.component("input", 20, 20, "IN1", "input");
+  const nport = C.component("nport", 800, 500, "N1", "nport");
+  const original = { version: 1, name: "Fixed placement", components: [input, nport], wires: [
+    { id: "signal", from: { component: input.id, pin: "P" }, to: { component: nport.id, pin: "1" } }
+  ] };
+  const organized = C.organize(original), wire = organized.wires[0];
+  assert.deepEqual(Array.from(organized.components, component => [component.id, component.x, component.y]),
+    Array.from(original.components, component => [component.id, component.x, component.y]));
+  assert.notEqual(C.endpoint(organized, wire.from).y, C.endpoint(organized, wire.to).y);
+  const points = C.wireRoute(organized, wire);
+  assert.deepEqual(points[0], C.endpoint(organized, wire.from));
+  assert.deepEqual(points.at(-1), C.endpoint(organized, wire.to));
+});
+
+test("does not fold back disconnected local wires that share a net label", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit;
+  const upperInductor = C.component("inductor", 200, 200, "L1", "l1");
+  const upperGround = C.component("gnd", 200, 340, "GND1", "g1");
+  const lowerInductor = C.component("inductor", 600, 600, "L2", "l2");
+  const lowerGround = C.component("gnd", 600, 740, "GND2", "g2");
+  const organized = C.organize({ version: 1, name: "Local grounds", components: [upperInductor, upperGround, lowerInductor, lowerGround], wires: [
+    { id: "upper", net: "GND", from: { component: upperInductor.id, pin: "2" }, to: { component: upperGround.id, pin: "0" } },
+    { id: "lower", net: "GND", from: { component: lowerInductor.id, pin: "2" }, to: { component: lowerGround.id, pin: "0" } }
+  ] });
+  organized.wires.forEach(wire => {
+    const points = C.wireRoute(organized, wire);
+    assert.equal(points.length, 2);
+    assert.equal(points[0].x, points[1].x);
+  });
 });
 
 test("persists organized Spectre waypoints in the v2 layout", () => {
@@ -541,7 +604,9 @@ PORT0 (net8 AVSS) port r=50 type=sine
     const points = routes.get(wire.id), start = C.endpoint(state, wire.from), end = C.endpoint(state, wire.to);
     assert.deepEqual(points[0], start);
     assert.deepEqual(points.at(-1), end);
-    assert.ok(points.length > 2);
+    assert.ok(points.length >= 2);
+    assert.ok(points.some((point, index) => index && (point.x !== points[index - 1].x || point.y !== points[index - 1].y)));
+    for (let index = 1; index < points.length; index++) assert.ok(points[index].x === points[index - 1].x || points[index].y === points[index - 1].y);
   }
 });
 
@@ -568,6 +633,41 @@ test("reroutes ordinary and saved wires instead of crossing a component interior
     assert.ok(points[index - 1].x === points[index].x || points[index - 1].y === points[index].y);
     assert.equal(crossesInterior(points[index - 1], points[index]), false);
   }
+});
+
+test("routes away from each endpoint perpendicular to its component border", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const C = sandbox.Circuit;
+
+  const resistor = C.component("resistor", 300, 100, "R1", "resistor");
+  const output = C.component("output", 100, 160, "OUT1", "output");
+  const bottomWire = { id: "bottom", from: { component: resistor.id, pin: "2" }, to: { component: output.id, pin: "P" } };
+  const bottomState = { version: 1, name: "Bottom normal", components: [resistor, output], wires: [bottomWire] };
+  const bottomRoute = C.wireRoute(bottomState, bottomWire);
+  assert.equal(bottomRoute[1].x, bottomRoute[0].x);
+  assert.ok(bottomRoute[1].y > bottomRoute[0].y);
+
+  bottomWire.manual = { axis: "x", value: 220 };
+  const manuallyOverridden = C.wireRoute(bottomState, bottomWire);
+  assert.equal(manuallyOverridden[1].y, manuallyOverridden[0].y);
+  assert.ok(manuallyOverridden[1].x < manuallyOverridden[0].x);
+
+  const input = C.component("input", 100, 300, "IN1", "input");
+  const upperResistor = C.component("resistor", 140, 100, "R2", "upper");
+  const rightWire = { id: "right", from: { component: input.id, pin: "P" }, to: { component: upperResistor.id, pin: "2" } };
+  const rightState = { version: 1, name: "Right normal", components: [input, upperResistor], wires: [rightWire] };
+  const rightRoute = C.wireRoute(rightState, rightWire);
+  assert.equal(rightRoute[1].y, rightRoute[0].y);
+  assert.ok(rightRoute[1].x > rightRoute[0].x);
+
+  const preview = C.previewRoute(rightState, { component: input.id, pin: "P" }, { x: 60, y: 80 });
+  assert.equal(preview[1].y, preview[0].y);
+  assert.ok(preview[1].x > preview[0].x);
 });
 
 test("separates different-net bends while allowing only straight perpendicular crossings", () => {

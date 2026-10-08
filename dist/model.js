@@ -68,6 +68,15 @@
     return [start, { x: midpoint, y: start.y }, { x: midpoint, y: end.y }, end];
   }
 
+  function channelRoute(state, wire, channel) {
+    const startItem = state.components.find(item => item.id === wire.from.component), endItem = state.components.find(item => item.id === wire.to.component);
+    const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
+    const startEscape = escapePoint(startItem, start, end), endEscape = escapePoint(endItem, end, start);
+    return simplify(channel.axis === "y"
+      ? [start, startEscape, { x: startEscape.x, y: channel.value }, { x: endEscape.x, y: channel.value }, endEscape, end]
+      : [start, startEscape, { x: channel.value, y: startEscape.y }, { x: channel.value, y: endEscape.y }, endEscape, end]);
+  }
+
   const compactRoute = points => points.filter((point, index) => !index || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
   function candidateRoute(state, wire) {
     const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
@@ -75,16 +84,25 @@
       ? route(start, end, wire.manual)
       : Array.isArray(wire.waypoints) && wire.waypoints.length
         ? [start, ...wire.waypoints, end]
-        : route(start, end, wire.auto));
+        : wire.auto ? channelRoute(state, wire, wire.auto) : route(start, end));
   }
   function wireRoute(state, wire) {
     const candidate = candidateRoute(state, wire);
     const orthogonal = candidate.every((point, index) => !index || point.x === candidate[index - 1].x || point.y === candidate[index - 1].y);
-    if (orthogonal && !routeCrossesComponents(state, wire, candidate)) return candidate;
+    const respectsDefaultDirection = wire.manual || routeRespectsEndpointNormals(state, wire, candidate);
+    if (orthogonal && respectsDefaultDirection && !routeCrossesComponents(state, wire, candidate)) return candidate;
     return findOrthogonalPath(state, wire, new Map(), "current-wire");
   }
   const pathData = points => points.map((point, index) => (index ? "L" : "M") + point.x + " " + point.y).join(" ");
   const wirePath = (state, wire) => pathData(wireRoute(state, wire));
+  function previewRoute(state, end, target) {
+    const item = state.components.find(component => component.id === end.component);
+    if (!item) return [];
+    const start = endpoint(state, end), escape = escapePoint(item, start, target);
+    return simplify(escape.x !== start.x
+      ? [start, escape, { x: escape.x, y: target.y }, target]
+      : [start, escape, { x: target.x, y: escape.y }, target]);
+  }
 
   const snap = value => Math.round(value / 20) * 20;
   function componentBounds(item, clearance) {
@@ -115,101 +133,6 @@
       }
     }
     return false;
-  }
-
-  function componentRole(item) {
-    if (item.boundaryPort) {
-      if (item.rotation === 90) return "top";
-      if (item.rotation === 270) return "bottom";
-      return item.rotation === 180 ? "output" : "input";
-    }
-    if (item.type === "vdd") return "top";
-    if (item.type === "gnd") return "bottom";
-    if (["voltage", "current"].includes(item.type)) return "source";
-    if (item.type === "input" || item.type === "port" || (item.master || "").toLowerCase() === "port") return "input";
-    if (item.type === "output") return "output";
-    return "signal";
-  }
-
-  function connectedAverageX(item, next, adjacency) {
-    const values = [...(adjacency.get(item.id) || [])].map(id => next.components.find(component => component.id === id)?.x).filter(Number.isFinite);
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : item.x;
-  }
-
-  function layoutComponents(next) {
-    const adjacency = new Map(next.components.map(item => [item.id, new Set()]));
-    next.wires.forEach(wire => {
-      adjacency.get(wire.from.component)?.add(wire.to.component);
-      adjacency.get(wire.to.component)?.add(wire.from.component);
-    });
-    const core = next.components.filter(item => !["top", "bottom", "source"].includes(componentRole(item)));
-    const coreIds = new Set(core.map(item => item.id));
-    const roots = core.filter(item => componentRole(item) === "input");
-    const ranks = new Map(), queue = [];
-    (roots.length ? roots : core.filter(item => [...(adjacency.get(item.id) || [])].filter(id => coreIds.has(id)).length <= 1).slice(0, 1)).forEach(item => {
-      ranks.set(item.id, 0); queue.push(item.id);
-    });
-    if (!queue.length && core.length) { ranks.set(core[0].id, 0); queue.push(core[0].id); }
-    const spread = () => {
-      while (queue.length) {
-        const id = queue.shift(), rank = ranks.get(id) + 1;
-        [...(adjacency.get(id) || [])].filter(nextId => coreIds.has(nextId)).sort().forEach(nextId => {
-          if (!ranks.has(nextId)) { ranks.set(nextId, rank); queue.push(nextId); }
-        });
-      }
-    };
-    spread();
-    core.forEach(item => { if (!ranks.has(item.id)) { ranks.set(item.id, 0); queue.push(item.id); spread(); } });
-    const columns = new Map();
-    core.forEach(item => { const rank = ranks.get(item.id) || 0; if (!columns.has(rank)) columns.set(rank, []); columns.get(rank).push(item); });
-    const order = new Map();
-    [...columns.keys()].sort((a, b) => a - b).forEach(rank => columns.get(rank)
-      .sort((a, b) => a.ref.localeCompare(b.ref, undefined, { numeric: true }))
-      .forEach((item, index) => order.set(item.id, index)));
-    for (let sweep = 0; sweep < 8; sweep++) {
-      [...columns.keys()].sort((a, b) => sweep % 2 ? b - a : a - b).forEach(rank => {
-        const score = item => {
-          const values = [...(adjacency.get(item.id) || [])].filter(id => coreIds.has(id) && ranks.get(id) !== rank).map(id => order.get(id)).filter(Number.isFinite);
-          return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : order.get(item.id);
-        };
-        columns.get(rank).sort((a, b) => score(a) - score(b) || a.ref.localeCompare(b.ref, undefined, { numeric: true }))
-          .forEach((item, index) => order.set(item.id, index));
-      });
-    }
-    const ranksOrdered = [...columns.keys()].sort((a, b) => a - b);
-    const widths = new Map(ranksOrdered.map(rank => [rank, Math.max(...columns.get(rank).map(item => componentBounds(item).width))]));
-    const heights = new Map(ranksOrdered.map(rank => [rank, columns.get(rank).reduce((sum, item) => sum + componentBounds(item).height, 0) + Math.max(0, columns.get(rank).length - 1) * 60]));
-    const maxHeight = Math.max(0, ...heights.values());
-    let x = 160, previousWidth = 0;
-    ranksOrdered.forEach(rank => {
-      const width = widths.get(rank);
-      x += previousWidth / 2 + width / 2 + (previousWidth ? 80 : 0);
-      let y = 180 + (maxHeight - heights.get(rank)) / 2;
-      columns.get(rank).forEach(item => {
-        const box = componentBounds(item);
-        item.x = snap(x); item.y = snap(y + box.height / 2);
-        y += box.height + 60;
-      });
-      previousWidth = width;
-    });
-    const coreBoxes = core.map(item => componentBounds(item));
-    const minCoreY = coreBoxes.length ? Math.min(...coreBoxes.map(box => box.top)) : 180;
-    const maxCoreY = coreBoxes.length ? Math.max(...coreBoxes.map(box => box.bottom)) : 320;
-    const placeUtilityRow = (items, y, gap) => {
-      const sorted = items.map(item => ({ item, preferred: connectedAverageX(item, next, adjacency) }))
-        .sort((a, b) => a.preferred - b.preferred || a.item.ref.localeCompare(b.item.ref, undefined, { numeric: true }));
-      let right = -Infinity;
-      sorted.forEach(({ item, preferred }) => {
-        const box = componentBounds(item), center = Math.max(snap(preferred), right + gap + box.width / 2);
-        item.x = center; item.y = snap(y); right = center + box.width / 2;
-      });
-    };
-    placeUtilityRow(next.components.filter(item => componentRole(item) === "top"), minCoreY - 100, 40);
-    placeUtilityRow(next.components.filter(item => ["bottom", "source"].includes(componentRole(item))), maxCoreY + 110, 40);
-    const boxes = next.components.map(item => componentBounds(item));
-    const shiftX = boxes.length ? 100 - Math.min(...boxes.map(box => box.left)) : 0;
-    const shiftY = boxes.length ? 100 - Math.min(...boxes.map(box => box.top)) : 0;
-    next.components.forEach(item => { item.x = snap(item.x + shiftX); item.y = snap(item.y + shiftY); });
   }
 
   class MinHeap {
@@ -292,6 +215,19 @@
     if (dy) return { x: snap(point.x), y: snap(dy > 0 ? box.bottom : box.top) };
     if (Math.abs(other.x - point.x) >= Math.abs(other.y - point.y)) return { x: snap(other.x > point.x ? box.right : box.left), y: snap(point.y) };
     return { x: snap(point.x), y: snap(other.y > point.y ? box.bottom : box.top) };
+  }
+  function routeRespectsEndpointNormals(state, wire, points) {
+    if (!Array.isArray(points) || points.length < 2) return false;
+    const startItem = state.components.find(item => item.id === wire.from.component), endItem = state.components.find(item => item.id === wire.to.component);
+    if (!startItem || !endItem) return false;
+    const start = endpoint(state, wire.from), end = endpoint(state, wire.to);
+    const startEscape = escapePoint(startItem, start, end), endEscape = escapePoint(endItem, end, start);
+    const followsOutward = (pin, adjacent, escape) => {
+      const expectedX = Math.sign(escape.x - pin.x), expectedY = Math.sign(escape.y - pin.y);
+      const actualX = Math.sign(adjacent.x - pin.x), actualY = Math.sign(adjacent.y - pin.y);
+      return expectedX ? adjacent.y === pin.y && actualX === expectedX : adjacent.x === pin.x && actualY === expectedY;
+    };
+    return followsOutward(start, points[1], startEscape) && followsOutward(end, points[points.length - 2], endEscape);
   }
   function simplify(points) {
     const compact = compactRoute(points);
@@ -413,7 +349,7 @@
     }
   }
 
-  function routingNetKeys(wires) {
+  function routingNetKeys(wires, mergeNamedNets = true) {
     const parent = wires.map((_, index) => index);
     const find = index => { while (parent[index] !== index) { parent[index] = parent[parent[index]]; index = parent[index]; } return index; };
     const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[rb] = ra; };
@@ -423,11 +359,51 @@
         const key = end.component + ":" + end.pin;
         if (endpointOwner.has(key)) union(index, endpointOwner.get(key)); else endpointOwner.set(key, index);
       });
-      if (wire.net) {
+      if (mergeNamedNets && wire.net) {
         if (namedOwner.has(wire.net)) union(index, namedOwner.get(wire.net)); else namedOwner.set(wire.net, index);
       }
     });
     return new Map(wires.map((wire, index) => [wire.id, "network:" + find(index)]));
+  }
+
+  function sharedNetworkChannels(state, wires) {
+    // A shared drawing trunk is only valid for wires that meet at an actual
+    // endpoint. Equal net labels still identify one electrical net, but local
+    // GND/VDD symbols must not be pulled into one long geometric bus.
+    const keys = routingNetKeys(wires, false), groups = new Map(), channels = new Map();
+    wires.forEach(wire => {
+      const key = keys.get(wire.id);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(wire);
+    });
+    groups.forEach(group => {
+      if (group.length < 2) return;
+      const unique = new Map();
+      group.forEach(wire => [wire.from, wire.to].forEach(end => unique.set(end.component + ":" + end.pin, end)));
+      if (unique.size < 3) return;
+      const terminals = [...unique.values()].map(end => {
+        const item = state.components.find(component => component.id === end.component);
+        return { end, item, point: endpoint(state, end) };
+      }).filter(entry => entry.item);
+      if (terminals.length < 3) return;
+      const center = {
+        x: terminals.reduce((sum, entry) => sum + entry.point.x, 0) / terminals.length,
+        y: terminals.reduce((sum, entry) => sum + entry.point.y, 0) / terminals.length
+      };
+      terminals.forEach(entry => {
+        const escape = escapePoint(entry.item, entry.point, center);
+        entry.normal = { x: Math.sign(escape.x - entry.point.x), y: Math.sign(escape.y - entry.point.y) };
+      });
+      const xs = terminals.map(entry => entry.point.x), ys = terminals.map(entry => entry.point.y);
+      const axis = Math.max(...xs) - Math.min(...xs) >= Math.max(...ys) - Math.min(...ys) ? "y" : "x";
+      const facing = terminals.filter(entry => axis === "y" ? entry.normal.x : entry.normal.y);
+      const values = (facing.length ? facing : terminals).map(entry => axis === "y" ? entry.point.y : entry.point.x).sort((a, b) => a - b);
+      const median = values[Math.floor(values.length / 2)], counts = new Map();
+      values.forEach(value => counts.set(value, (counts.get(value) || 0) + 1));
+      const value = snap([...counts].sort((a, b) => b[1] - a[1] || Math.abs(a[0] - median) - Math.abs(b[0] - median) || a[0] - b[0])[0][0]);
+      group.forEach(wire => channels.set(wire.id, { axis, value }));
+    });
+    return channels;
   }
 
   function routeIsComplete(state, wire, points) {
@@ -455,7 +431,8 @@
       sequence.forEach(({ wire }) => {
         const routeNet = routeNets.get(wire.id), candidate = useCandidates ? candidateRoute(state, wire) : null;
         const orthogonal = candidate?.every((point, index) => !index || point.x === candidate[index - 1].x || point.y === candidate[index - 1].y);
-        const points = candidate && orthogonal && !routeCrossesComponents(state, wire, candidate) && !conflictsWithRouting(candidate, occupied, routeNet)
+        const respectsDefaultDirection = wire.manual || routeRespectsEndpointNormals(state, wire, candidate);
+        const points = candidate && orthogonal && respectsDefaultDirection && !routeCrossesComponents(state, wire, candidate) && !conflictsWithRouting(candidate, occupied, routeNet)
           ? candidate
           : findOrthogonalPath(state, wire, occupied, routeNet);
         routes.set(wire.id, points);
@@ -480,12 +457,16 @@
   function organize(input) {
     const next = clone(input);
     if (!next.components.length) return next;
-    layoutComponents(next);
     const orderedWires = next.wires.slice().sort((a, b) => String(a.net || "").localeCompare(String(b.net || "")) ||
       Math.abs(endpoint(next, b.from).x - endpoint(next, b.to).x) + Math.abs(endpoint(next, b.from).y - endpoint(next, b.to).y) -
       Math.abs(endpoint(next, a.from).x - endpoint(next, a.to).x) - Math.abs(endpoint(next, a.from).y - endpoint(next, a.to).y));
-    orderedWires.forEach(wire => { delete wire.manual; delete wire.auto; });
-    const routes = routeBatch(next, orderedWires.map((wire, index) => ({ wire, index })), false);
+    const channels = sharedNetworkChannels(next, orderedWires);
+    orderedWires.forEach(wire => {
+      delete wire.manual; delete wire.auto; delete wire.waypoints;
+      const channel = channels.get(wire.id);
+      if (channel) wire.auto = channel;
+    });
+    const routes = routeBatch(next, orderedWires.map((wire, index) => ({ wire, index })), true);
     const incomplete = orderedWires.filter(wire => !routeIsComplete(next, wire, routes.get(wire.id)));
     if (incomplete.length) throw new Error("无法生成完整路径：" + incomplete.map(wire => {
       const from = next.components.find(item => item.id === wire.from.component)?.ref + "." + wire.from.pin;
@@ -494,6 +475,7 @@
     }).join(", "));
     orderedWires.forEach(wire => {
       const points = routes.get(wire.id);
+      delete wire.auto;
       wire.waypoints = points.slice(1, -1);
     });
     return validate(next);
@@ -594,5 +576,5 @@
     return issues;
   }
 
-  global.Circuit = { definitions, definition, clone, id: makeId, component, pinPoint, endpoint, route, wireRoute, wireRoutes, organize, componentBounds, pathData, wirePath, demo, validate, check };
+  global.Circuit = { definitions, definition, clone, id: makeId, component, pinPoint, endpoint, route, previewRoute, wireRoute, wireRoutes, organize, componentBounds, pathData, wirePath, demo, validate, check };
 })(typeof window !== "undefined" ? window : globalThis);
