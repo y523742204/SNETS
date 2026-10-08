@@ -139,7 +139,7 @@ X0 (a b c d e) cell
   }
 });
 
-test("uses vertical basic passives and centers MOS drain-source pins", () => {
+test("uses vertical basic passives and preserves the original offset MOS vectors", () => {
   const sandbox = { self: null };
   sandbox.self = sandbox;
   vm.createContext(sandbox);
@@ -154,11 +154,41 @@ test("uses vertical basic passives and centers MOS drain-source pins", () => {
   }
   assert.equal(definitions.diode.category, "basic");
   for (const type of ["nmos", "pmos"]) {
+    assert.deepEqual([definitions[type].width, definitions[type].height], [80, 120]);
     const pins = Object.fromEntries(Array.from(definitions[type].pins, pin => [pin.id, pin]));
-    assert.equal(pins.D.x, 0);
-    assert.equal(pins.S.x, 0);
-    assert.equal(pins.B.x, 0);
-    assert.equal(pins.G.x, -80);
+    assert.equal(pins.D.x, 20);
+    assert.equal(pins.S.x, 20);
+    assert.equal(pins.B.x, 20);
+    assert.equal(pins.G.x, -60);
+    assert.equal(definitions[type].boundsX, -20);
+  }
+});
+
+test("basic library symbols use their smallest 20px-multiple bounding boxes", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  const expected = {
+    resistor: [40, 120],
+    inductor: [40, 120],
+    capacitor: [40, 120],
+    diode: [40, 120],
+    voltage: [60, 120],
+    current: [60, 120],
+    vdd: [40, 40],
+    gnd: [40, 40],
+    input: [80, 40],
+    output: [80, 40],
+    bidirectional: [80, 40],
+    port: [60, 120]
+  };
+  const basic = Object.entries(sandbox.SNETS_COMPONENT_LIBRARY).filter(([, definition]) => definition.category === "basic");
+  assert.equal(basic.length, Object.keys(expected).length);
+  for (const [name, definition] of basic) {
+    assert.deepEqual([definition.width, definition.height], expected[name]);
+    assert.equal(definition.width % 20, 0);
+    assert.equal(definition.height % 20, 0);
   }
 });
 
@@ -285,6 +315,41 @@ R2 (bus n3) resistor r=3k
   });
 });
 
+test("uses one minimal T junction for a resistor branch between two horizontal passives", () => {
+  const sandbox = { self: null };
+  sandbox.self = sandbox;
+  vm.createContext(sandbox);
+  loadBrowserScript("component-library.js", sandbox);
+  loadBrowserScript("spectre-parser.js", sandbox);
+  loadBrowserScript("model.js", sandbox);
+  const S = sandbox.SpectreImport, C = sandbox.Circuit;
+  const project = S.parse([{ name: "tee.scs", path: "tee.scs", text: `
+Cc (left n) capacitor c=10p
+Rb (top n) resistor r=2k
+Lg (n right) inductor l=2.5n
+` }]);
+  const circuit = S.getCircuit(project, "$root");
+  const byRef = Object.fromEntries(circuit.instances.map(instance => [instance.ref, instance]));
+  project.layouts.$root = {
+    [byRef.Cc.id]: { x: 200, y: 400, rotation: 270 },
+    [byRef.Rb.id]: { x: 400, y: 200, rotation: 0 },
+    [byRef.Lg.id]: { x: 600, y: 400, rotation: 270 }
+  };
+  const state = C.validate(S.view(project, "$root"));
+  const branches = state.wires.filter(wire => wire.net === "n");
+  assert.equal(branches.length, 2);
+  assert.equal(branches.every(wire => wire.auto.axis === "y" && wire.auto.value === 400), true);
+  const routes = C.wireRoutes(state), segments = branches.flatMap(wire => {
+    const points = routes.get(wire.id);
+    return points.slice(1).map((point, index) => [points[index], point]);
+  });
+  const covers = (x1, y1, x2, y2) => segments.some(([a, b]) =>
+    a.y === b.y && y1 === y2 && a.y === y1 && Math.min(a.x, b.x) <= Math.min(x1, x2) && Math.max(a.x, b.x) >= Math.max(x1, x2) ||
+    a.x === b.x && x1 === x2 && a.x === x1 && Math.min(a.y, b.y) <= Math.min(y1, y2) && Math.max(a.y, b.y) >= Math.max(y1, y2));
+  assert.equal(covers(260, 400, 540, 400), true);
+  assert.equal(covers(400, 260, 400, 400), true);
+});
+
 test("places semantic dynamic pins on conventional symbol sides", () => {
   const sandbox = { self: null };
   sandbox.self = sandbox;
@@ -379,6 +444,7 @@ X0 (vin vout 0) cell
 ` }]);
   const organized = C.organize(C.validate(S.view(project, "cell")));
   S.syncLayout(project, "cell", organized);
+  assert.equal(project.layouts.cell.__routingVersion, 2);
   const restored = C.validate(S.view(S.validateProject(JSON.parse(JSON.stringify(project))), "cell"));
   const routed = organized.wires.filter(wire => wire.waypoints.length > 0);
   assert.ok(routed.length > 0);

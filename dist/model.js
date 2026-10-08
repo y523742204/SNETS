@@ -90,9 +90,14 @@
   function componentBounds(item, clearance) {
     const d = definition(item) || definitions.generic;
     let width = Number(d.width) || 144, height = Number(d.height) || 140;
+    const radians = (item.rotation || 0) * Math.PI / 180;
+    const cos = Math.round(Math.cos(radians)), sin = Math.round(Math.sin(radians));
+    const sourceX = Number(d.boundsX) || 0, sourceY = Number(d.boundsY) || 0;
+    const rotatedX = sourceX * cos - sourceY * sin, rotatedY = sourceX * sin + sourceY * cos;
+    const offsetX = item.mirrorX ? -rotatedX : rotatedX, offsetY = item.mirrorY ? -rotatedY : rotatedY;
     if ((item.rotation || 0) % 180) [width, height] = [height, width];
     const pad = clearance || 0;
-    return { id: item.id, left: item.x - width / 2 - pad, right: item.x + width / 2 + pad, top: item.y - height / 2 - pad, bottom: item.y + height / 2 + pad, width, height };
+    return { id: item.id, left: item.x + offsetX - width / 2 - pad, right: item.x + offsetX + width / 2 + pad, top: item.y + offsetY - height / 2 - pad, bottom: item.y + offsetY + height / 2 + pad, width, height };
   }
 
   function segmentCrossesInterior(a, b, box) {

@@ -3,6 +3,7 @@
 
   const ANALYSES = new Set(["ac", "dc", "dcop", "envlp", "hb", "hbnoise", "info", "noise", "options", "pac", "pnoise", "pss", "pxf", "save", "sens", "sp", "sweep", "tran", "xf"]);
   const PRIMITIVES = new Set(["bsource", "capacitor", "cccs", "ccvs", "diode", "inductor", "isource", "nport", "port", "pmos", "nmos", "resistor", "transformer", "vccs", "vcvs", "vsource"]);
+  const ROUTING_VERSION = 2;
   const clone = value => JSON.parse(JSON.stringify(value));
   const slug = value => String(value || "item").replace(/[^A-Za-z0-9_.-]+/g, "_");
   const makeId = (prefix, scope, index) => prefix + "_" + slug(scope) + "_" + index;
@@ -670,8 +671,18 @@
       if (kind === "power") { axis = "y"; value = snap20(minY - 120); }
       else if (kind === "ground") { axis = "y"; value = snap20(maxY + 120); }
       else if (kind === "bias") { axis = "y"; value = snap20(maxY + 80); }
-      else if (maxX - minX >= maxY - minY) { axis = "x"; value = snap20((minX + maxX) / 2); }
-      else { axis = "y"; value = snap20((minY + maxY) / 2); }
+      else if (maxX - minX >= maxY - minY) {
+        // Horizontally distributed terminals share one horizontal trunk. Use
+        // the median terminal row so a common two-terminal row plus one branch
+        // becomes a minimal T instead of two independent U-shaped detours.
+        axis = "y";
+        const rows = points.map(point => point.y).sort((a, b) => a - b);
+        value = snap20(rows[Math.floor(rows.length / 2)]);
+      } else {
+        axis = "x";
+        const columns = points.map(point => point.x).sort((a, b) => a - b);
+        value = snap20(columns[Math.floor(columns.length / 2)]);
+      }
       // Move a preferred channel away from unrelated symbols. End symbols are
       // ignored because their short stubs are expected to enter the channel.
       const endpointIds = new Set(ends.map(end => end.component));
@@ -698,7 +709,7 @@
           id, from: anchor, to: end, net: net.name, imported: true,
           auto: { axis, value }, showLabel: branchIndex === 0 && (ends.length > 2 || kind !== "signal"),
           ...(storedRoute && ["x", "y"].includes(storedRoute.axis) && Number.isFinite(storedRoute.value) ? { manual: { axis: storedRoute.axis, value: storedRoute.value } } : {}),
-          ...(Array.isArray(storedRoute?.waypoints) ? { waypoints: storedRoute.waypoints.map(point => ({ x: point.x, y: point.y })) } : {})
+          ...(saved.__routingVersion === ROUTING_VERSION && Array.isArray(storedRoute?.waypoints) ? { waypoints: storedRoute.waypoints.map(point => ({ x: point.x, y: point.y })) } : {})
         });
       });
     }
@@ -712,6 +723,7 @@
       ...(component.mirrorX === true ? { mirrorX: true } : {}), ...(component.mirrorY === true ? { mirrorY: true } : {})
     }; });
     target.__wires = {};
+    target.__routingVersion = ROUTING_VERSION;
     state.wires.forEach(wire => {
       if (wire.manual) target.__wires[wire.id] = { axis: wire.manual.axis, value: wire.manual.value };
       else if (Array.isArray(wire.waypoints) && wire.waypoints.length) target.__wires[wire.id] = { waypoints: wire.waypoints.map(point => ({ x: point.x, y: point.y })) };

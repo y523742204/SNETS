@@ -340,6 +340,19 @@
     }
   }
   const definitionFor = component => C.definition(component) || defs.generic;
+  const componentFrame = (component, definition = definitionFor(component)) => {
+    let width = definition.width || 144, height = definition.height || 140;
+    const radians = (component.rotation || 0) * Math.PI / 180;
+    const cos = Math.round(Math.cos(radians)), sin = Math.round(Math.sin(radians));
+    const sourceX = Number(definition.boundsX) || 0, sourceY = Number(definition.boundsY) || 0;
+    const rotatedX = sourceX * cos - sourceY * sin, rotatedY = sourceX * sin + sourceY * cos;
+    if ((component.rotation || 0) % 180) [width, height] = [height, width];
+    return {
+      width, height,
+      x: component.mirrorX ? -rotatedX : rotatedX,
+      y: component.mirrorY ? -rotatedY : rotatedY
+    };
+  };
   function symbolPreview(value) {
     const d = typeof value === "string" ? defs[value] : definitionFor(value);
     const width = Math.max(150, Number(d.width) || 0), height = Math.max(140, Number(d.height) || 0);
@@ -363,8 +376,9 @@
     const labelY = isPower ? (c.type === "vdd" ? -31 : 42) : (isPort ? -25 : -17);
     const main = isPower ? (c.type === "vdd" ? "VDD" : "GND") : (isPort ? c.value : c.ref);
     const detail = c.dynamicPins ? (c.group ? c.memberCount + " 个完全相同的实例" : c.master) : (c.type === "pmos" || c.type === "nmos" ? "W=" + c.w + "μ  L=" + c.l + "μ" : (isPower || isPort ? "" : c.value));
-    const dw = d.width || 144, dh = d.height || 140;
-    const box = selectedClass ? '<rect class="selection-box" x="' + (-dw / 2 - 2) + '" y="' + (-dh / 2 - 2) + '" width="' + (dw + 4) + '" height="' + (dh + 4) + '" rx="3"/>' : "";
+    const frame = componentFrame(c, d), dw = frame.width, dh = frame.height;
+    const boxX = frame.x - dw / 2, boxY = frame.y - dh / 2;
+    const box = selectedClass ? '<rect class="selection-box" x="' + (boxX - 2) + '" y="' + (boxY - 2) + '" width="' + (dw + 4) + '" height="' + (dh + 4) + '" rx="3"/>' : "";
     const pins = d.pins.map(pin => {
       const point = C.pinPoint(c, pin.id);
       return '<g class="component-pin' + (isConnected(c.id, pin.id) ? " connected" : "") + (wireStart?.component === c.id && wireStart.pin === pin.id ? " wiring" : "") + '" data-component="' + escapeHtml(c.id) + '" data-pin="' + escapeHtml(pin.id) + '" transform="translate(' + (point.x - c.x) + " " + (point.y - c.y) + ')"><circle r="13" fill="transparent"/><circle class="pin-dot" r="3"/><title>' + escapeHtml(c.ref + " · " + pin.name) + '</title></g>';
@@ -372,7 +386,7 @@
     const radians = (c.rotation || 0) * Math.PI / 180, cos = Math.round(Math.cos(radians)), sin = Math.round(Math.sin(radians));
     const sx = c.mirrorX ? -1 : 1, sy = c.mirrorY ? -1 : 1;
     const symbolTransform = "matrix(" + (sx * cos) + " " + (sy * sin) + " " + (-sx * sin) + " " + (sy * cos) + " 0 0)";
-    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="' + (-dw / 2) + '" y="' + (-dh / 2) + '" width="' + dw + '" height="' + dh + '" fill="transparent"/><g class="symbol-body" transform="' + symbolTransform + '">' + (d.body || defs.generic.body) + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
+    return '<g class="component' + selectedClass + '" data-id="' + escapeHtml(c.id) + '" transform="translate(' + c.x + " " + c.y + ')">' + box + '<rect x="' + boxX + '" y="' + boxY + '" width="' + dw + '" height="' + dh + '" fill="transparent"/><g class="symbol-body" transform="' + symbolTransform + '">' + (d.body || defs.generic.body) + '</g><g pointer-events="none"><text class="component-ref" x="' + labelX + '" y="' + labelY + '" text-anchor="' + (isPower || isPort ? "middle" : "start") + '">' + escapeHtml(main) + '</text>' + (detail ? '<text class="component-value" x="' + labelX + '" y="' + (labelY + 20) + '">' + escapeHtml(detail) + '</text>' : "") + '</g>' + pins + '</g>';
   }
   function sameNetJunctions(wires, routes) {
     const groups = new Map();
@@ -749,7 +763,7 @@
     return match;
   }
   function normalizeRect(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(b.x - a.x), h: Math.abs(b.y - a.y) }; }
-  function componentBox(c) { const d = definitionFor(c), w = d.width || 144, h = d.height || 140; return { x: c.x - w / 2, y: c.y - h / 2, w, h }; }
+  function componentBox(c) { const frame = componentFrame(c); return { x: c.x + frame.x - frame.width / 2, y: c.y + frame.y - frame.height / 2, w: frame.width, h: frame.height }; }
   function rectsIntersect(a, b) { return a.x <= b.x + b.w && a.x + a.w >= b.x && a.y <= b.y + b.h && a.y + a.h >= b.y; }
   function pointInRect(point, rect) { return point.x >= rect.x && point.x <= rect.x + rect.w && point.y >= rect.y && point.y <= rect.y + rect.h; }
   function segmentIntersectsRect(a, b, rect) {

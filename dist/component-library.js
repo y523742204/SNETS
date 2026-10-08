@@ -36,6 +36,8 @@
       ],
       fields: [["value", "电阻值", "Ω"]],
       defaults: {},
+      width: 40,
+      height: 120,
       body: '<path d="M0-60V-32L-9-25 9-15-9-5 9 5-9 15 9 25 0 32V60"/>'
     },
 
@@ -48,7 +50,9 @@
       pins: [{ id: "1", name: "端口 1", x: 0, y: -60 }, { id: "2", name: "端口 2", x: 0, y: 60 }],
       fields: [["value", "电感值", "H"]],
       defaults: {},
-      body: '<g transform="rotate(90)"><path d="M-60 0H-36C-36-22-12-22-12 0C-12-22 12-22 12 0C12-22 36-22 36 0H60"/></g>'
+      width: 40,
+      height: 120,
+      body: '<g transform="rotate(90)"><path d="M-60 0H-36C-36-18-12-18-12 0C-12-18 12-18 12 0C12-18 36-18 36 0H60"/></g>'
     },
 
     capacitor: {
@@ -63,7 +67,9 @@
       ],
       fields: [["value", "电容值", "F"]],
       defaults: {},
-      body: '<path d="M0-60V-7M-24-7H24M-24 7H24M0 7V60"/>'
+      width: 40,
+      height: 120,
+      body: '<path d="M0-60V-7M-20-7H20M-20 7H20M0 7V60"/>'
     },
 
     diode: {
@@ -75,7 +81,9 @@
       pins: [{ id: "A", name: "阳极", x: 0, y: -60 }, { id: "K", name: "阴极", x: 0, y: 60 }],
       fields: [["value", "型号", ""]],
       defaults: {},
-      body: '<g transform="rotate(90)"><path d="M-60 0H-18M18 0H60M-18-28V28L18 0ZM18-28V28"/></g>'
+      width: 40,
+      height: 120,
+      body: '<g transform="rotate(90)"><path d="M-60 0H-18M18 0H60M-18-20V20L18 0ZM18-20V20"/></g>'
     },
 
     voltage: {
@@ -90,6 +98,8 @@
       ],
       fields: [["value", "电压值", ""]],
       defaults: {},
+      width: 60,
+      height: 120,
       body: '<circle cx="0" cy="0" r="27"/><path d="M0-60V-27M0 27V60M-8-10H8M0-18V-2M-8 12H8"/>'
     },
 
@@ -102,6 +112,8 @@
       pins: [{ id: "+", name: "正端", x: 0, y: -60 }, { id: "-", name: "负端", x: 0, y: 60 }],
       fields: [["value", "电流值", ""]],
       defaults: {},
+      width: 60,
+      height: 120,
       body: '<circle cx="0" cy="0" r="27"/><path d="M0-60V-27M0 27V60M0 15V-15M-7-6L0-15L7-6"/>'
     },
 
@@ -111,10 +123,12 @@
       category: "basic",
       prefix: "P",
       value: "1.8 V",
-      pins: [{ id: "V", name: "电源", x: 0, y: 40 }],
+      pins: [{ id: "V", name: "电源", x: 0, y: 20 }],
       fields: [["value", "电源标注", ""]],
       defaults: {},
-      body: '<path d="M0 40V 0M-18 0H18"/>'
+      width: 40,
+      height: 40,
+      body: '<path d="M0 20V0M-18 0H18"/>'
     },
 
     gnd: {
@@ -126,6 +140,8 @@
       pins: [{ id: "0", name: "地", x: 0, y: -20 }],
       fields: [],
       defaults: {},
+      width: 40,
+      height: 40,
       body: '<path d="M0 -20 V0 M-20 0 H20 M-13 10 H13 M-6 20 H6"/>'
     },
 
@@ -138,6 +154,8 @@
       pins: [{ id: "P", name: "信号", x: 40, y: 0 }],
       fields: [["value", "网络名称", ""]],
       defaults: {},
+      width: 80,
+      height: 40,
       body: '<path d="M-25-12H10L25 0 10 12H-25ZM25 0H40"/>'
     },
 
@@ -150,6 +168,8 @@
       pins: [{ id: "P", name: "信号", x: -40, y: 0 }],
       fields: [["value", "网络名称", ""]],
       defaults: {},
+      width: 80,
+      height: 40,
       body: '<path d="M-40 0H-25M-25-12H10L25 0 10 12H-25Z"/>'
     },
 
@@ -162,6 +182,8 @@
       pins: [{ id: "P", name: "双向信号", x: 40, y: 0 }],
       fields: [["value", "网络名称", ""]],
       defaults: {},
+      width: 80,
+      height: 40,
       body: '<path d="M-25 -12 H10 L25 0 10 12 H-25 ZM25 0 H40"/>'
     },
 
@@ -177,6 +199,8 @@
       ],
       fields: [["value", "端口阻抗", "Ω"], ["num", "端口编号", ""]],
       defaults: { num: "1" },
+      width: 60,
+      height: 120,
       body: '<path d="M0-60V-30M0 30V60"/><circle cx="0" cy="0" r="30"/><text x="0" y="4" text-anchor="middle" fill="currentColor" stroke="none" font-size="11">PORT</text>'
     },
 
@@ -186,16 +210,18 @@
       category: "transistor",
       prefix: "M",
       value: "nmos",
-      width: 160,
+      width: 80,
+      height: 120,
+      boundsX: -20,
       pins: [
-        { id: "D", name: "漏极", x: 0, y: -60 },
-        { id: "G", name: "栅极", x: -80, y: 0 },
-        { id: "S", name: "源极", x: 0, y: 60 },
-        { id: "B", name: "衬底", x: 0, y: 0 }
+        { id: "D", name: "漏极", x: 20, y: -60 },
+        { id: "G", name: "栅极", x: -60, y: 0 },
+        { id: "S", name: "源极", x: 20, y: 60 },
+        { id: "B", name: "衬底", x: 20, y: 0 }
       ],
       fields: [["w", "沟道宽度", "μm"], ["l", "沟道长度", "μm"]],
       defaults: { w: "2.0", l: "0.18" },
-      body: '<g transform="translate(-20 0)"><path d="M-60 0H-12M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><path d="M12 20 L20 25 L12 30"/></g>'
+      body: '<path d="M-60 0H-12M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><path d="M12 20 L20 25 L12 30"/>'
     },
 
     pmos: {
@@ -204,16 +230,18 @@
       category: "transistor",
       prefix: "M",
       value: "pmos",
-      width: 160,
+      width: 80,
+      height: 120,
+      boundsX: -20,
       pins: [
-        { id: "S", name: "源极", x: 0, y: -60 },
-        { id: "G", name: "栅极", x: -80, y: 0 },
-        { id: "D", name: "漏极", x: 0, y: 60 },
-        { id: "B", name: "衬底", x: 0, y: 0 }
+        { id: "S", name: "源极", x: 20, y: -60 },
+        { id: "G", name: "栅极", x: -60, y: 0 },
+        { id: "D", name: "漏极", x: 20, y: 60 },
+        { id: "B", name: "衬底", x: 20, y: 0 }
       ],
       fields: [["w", "沟道宽度", "μm"], ["l", "沟道长度", "μm"]],
       defaults: { w: "4.0", l: "0.18" },
-      body: '<g transform="translate(-20 0)"><path d="M-60 0H-25M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><circle cx="-19" cy="0" r="6"/><path d="M12 -30 L20 -25 L12 -20"/></g>'
+      body: '<path d="M-60 0H-25M-12-25V25M2-25V25M2-25H20V-60M2 25H20V60M2 0H20"/><circle cx="-19" cy="0" r="6"/><path d="M12 -30 L20 -25 L12 -20"/>'
     },
 
     inverter: {
